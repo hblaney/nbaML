@@ -53,3 +53,7 @@ def boxscore_path(
     if level not in {"team", "player"}:
         raise ValueError(f"level must be 'team' or 'player', got {level!r}")
     return raw_dir(root) / "boxscores" / f"{season}_{level}.{fmt}"
+
+
+def blind_ledger_path(root: Path | None = None) -> Path:
+    return data_root(root) / "blind_predictions.jsonl"
