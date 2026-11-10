@@ -1,0 +1,49 @@
+"""NBA team name ↔ tricode helpers for joining Odds API events to model slate."""
+
+from __future__ import annotations
+
+# Odds API / common full names → tricode
+TEAM_NAME_TO_TRICODE: dict[str, str] = {
+    "Atlanta Hawks": "ATL",
+    "Boston Celtics": "BOS",
+    "Brooklyn Nets": "BKN",
+    "Charlotte Hornets": "CHA",
+    "Chicago Bulls": "CHI",
+    "Cleveland Cavaliers": "CLE",
+    "Dallas Mavericks": "DAL",
+    "Denver Nuggets": "DEN",
+    "Detroit Pistons": "DET",
+    "Golden State Warriors": "GSW",
+    "Houston Rockets": "HOU",
+    "Indiana Pacers": "IND",
+    "LA Clippers": "LAC",
+    "Los Angeles Clippers": "LAC",
+    "Los Angeles Lakers": "LAL",
+    "Memphis Grizzlies": "MEM",
+    "Miami Heat": "MIA",
+    "Milwaukee Bucks": "MIL",
+    "Minnesota Timberwolves": "MIN",
+    "New Orleans Pelicans": "NOP",
+    "New York Knicks": "NYK",
+    "Oklahoma City Thunder": "OKC",
+    "Orlando Magic": "ORL",
+    "Philadelphia 76ers": "PHI",
+    "Phoenix Suns": "PHX",
+    "Portland Trail Blazers": "POR",
+    "Sacramento Kings": "SAC",
+    "San Antonio Spurs": "SAS",
+    "Toronto Raptors": "TOR",
+    "Utah Jazz": "UTA",
+    "Washington Wizards": "WAS",
+}
+
+
+def team_to_tricode(name: str) -> str | None:
+    """Map a full team name to tricode; also accepts tricodes passthrough."""
+    if not name:
+        return None
+    cleaned = name.strip()
+    upper = cleaned.upper()
+    if len(upper) == 3 and upper.isalpha():
+        return upper
+    return TEAM_NAME_TO_TRICODE.get(cleaned)

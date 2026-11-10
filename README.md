@@ -15,36 +15,29 @@ Props (points / rebounds / assists / threes / PRA) are **v1.5**.
 
 ## Status
 
-Skeleton + schedule/box ingest + **as-of team features** + **simple game score model**
-(ML / spread / total from one engine). Odds adapter and props are not in yet.
+Skeleton + ingest + as-of features/model + **Odds API adapter + edge table**.
+Kelly staking, full backtest harness, and props are not in yet.
 
 ## Layout
 
 ```
 src/nba_betting/
-  data/       # schedule, box scores (odds adapter later)
+  data/       # schedule, boxes, odds adapter
   features/   # as-of pace / ORTG / DRTG / rest / B2B
   models/     # Poisson score engine → ML / spread / total
-  pricing/    # de-vig, fair odds, edge, Kelly
-  backtest/   # walk-forward + metrics
-  slate/      # score a date from cache; lock/grade later
+  pricing/    # de-vig, fair American, edge join
+  backtest/   # walk-forward + metrics (later)
+  slate/      # score + edges from cache
 data/
   raw/
-    schedule/{season}.parquet   # also .csv mirror
+    schedule/{season}.parquet
     boxscores/{season}_team.parquet
+    odds/nba_*.json
   processed/
   blind_predictions.jsonl
-tests/
-  fixtures/   # offline CSV fixtures (ingest + model)
 ```
 
-Raw dumps under `data/raw/` are **gitignored**. Override the root with
-`--data-dir` or `NBA_BETTING_DATA_DIR`.
-
-## Requirements
-
-- Python **3.11+**
-- Optional: [uv](https://github.com/astral-sh/uv) for installs
+Raw dumps under `data/raw/` are **gitignored**.
 
 ## Install
 
@@ -52,56 +45,50 @@ Raw dumps under `data/raw/` are **gitignored**. Override the root with
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-Copy env template (no real secrets in git):
-
-```bash
 cp .env.example .env
+# later: set ODDS_API_KEY in .env (never commit it)
 ```
 
-## Pull data (`nba_api`)
+## Pull schedule / boxes
 
 ```bash
-nba-betting data pull-schedule --season 2024-25
-nba-betting data pull-boxes --season 2024-25
-nba-betting data pull --season 2024-25          # both
-nba-betting data pull --season 2024-25 --force  # re-fetch
+nba-betting data pull --season 2024-25
 ```
 
-Caches land at `data/raw/schedule/` and `data/raw/boxscores/` (parquet + csv).
-After the first pull, loads are offline.
-
-## Features + game model
-
-As-of ratings use **only** team games with `game_date < slate date` (no same-day /
-future leakage):
-
-- Possessions ≈ `FGA - OREB + TOV + 0.44 * FTA`
-- Pace (per 48), ORTG / DRTG from trailing window (default 20)
-- Rest days + B2B flags; home-court prior (~2.5 pts)
-
-Expected scores blend pace with offense/defense ratings; independent Poisson Monte
-Carlo yields moneyline, home-cover (vs `--spread`), and over (vs `--total`) from the
-**same** `(home_score, away_score)` draws.
-
-### Score a date (offline from cache)
+## Features + model score
 
 ```bash
 nba-betting model score --season 2024-25 --date 2024-10-25
-nba-betting slate score --season 2024-25 --date 2024-10-25 \
-  --spread -3.5 --total 220 --out data/processed/slate_2024-10-25.json
+nba-betting slate score --season 2024-25 --date 2024-10-25
 ```
 
-## Tests
+As-of ratings use only games with `game_date < slate date`. One Poisson engine
+drives moneyline, spread, and total probabilities.
 
-Default suite is offline:
+## Odds + edges
+
+Featured NBA markets via The Odds API (`basketball_nba`: `h2h,spreads,totals`,
+`regions=us`, American odds).
+
+```bash
+# Requires ODDS_API_KEY; prints a clear message and exits 0 if missing
+nba-betting odds pull
+
+# Join model slate to latest odds cache (or --odds-file / --live)
+nba-betting slate edges --season 2024-25 --date 2024-10-25
+nba-betting slate edges --season 2024-25 --date 2024-10-25 --min-edge 0.03 --out edges.json
+```
+
+Edge = model probability − de-vigged book implied. Without a key or cache, `slate
+edges` degrades to a clear no-odds message (no crash).
+
+## Tests
 
 ```bash
 pytest
 ```
 
-Optional live ingest smoke:
+Odds tests mock HTTP — **no real API key required**. Optional live `nba_api` smoke:
 
 ```bash
 RUN_LIVE_NBA_API=1 pytest -m live
@@ -112,10 +99,10 @@ RUN_LIVE_NBA_API=1 pytest -m live
 | Variable | Purpose |
 |----------|---------|
 | `ODDS_API_KEY` | The Odds API key (empty until configured) |
-| `ODDS_REGIONS` | Odds regions (default `us`) |
-| `ODDS_MARKETS` | Featured markets: `h2h,spreads,totals` |
-| `NBA_BETTING_DATA_DIR` | Optional override for the data root |
+| `ODDS_REGIONS` | default `us` |
+| `ODDS_MARKETS` | default `h2h,spreads,totals` |
+| `NBA_BETTING_DATA_DIR` | optional data root override |
 
 ## Out of scope (so far)
 
-Odds API adapter, edge/Kelly pricing, props, scrapers, Next.js / frontend, secrets.
+Kelly / bankroll, walk-forward backtest harness, props, scrapers, frontend, secrets in git.
