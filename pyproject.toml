@@ -13,12 +13,14 @@ authors = [{ name = "hblaney" }]
 dependencies = [
   "numpy",
   "pandas",
+  "pyarrow",
   "scikit-learn",
   "scipy",
   "requests",
   "pydantic",
   "python-dotenv",
   "typer",
+  "nba_api",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "live: hits stats.nba.com via nba_api (skipped unless RUN_LIVE_NBA_API=1)",
+]
 
 [tool.ruff]
 line-length = 100
