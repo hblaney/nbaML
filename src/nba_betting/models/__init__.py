@@ -1,1 +1,5 @@
-"""Game score engine and later props models (stub)."""
+"""Game score engine (+ props later)."""
+
+from nba_betting.models.game import GamePrediction, expected_scores, predict_game
+
+__all__ = ["GamePrediction", "expected_scores", "predict_game"]

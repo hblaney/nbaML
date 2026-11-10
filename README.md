@@ -15,19 +15,19 @@ Props (points / rebounds / assists / threes / PRA) are **v1.5**.
 
 ## Status
 
-Package skeleton + **schedule / box-score ingest** (`nba_api`). No game model, odds
-adapter, or props yet.
+Skeleton + schedule/box ingest + **as-of team features** + **simple game score model**
+(ML / spread / total from one engine). Odds adapter and props are not in yet.
 
 ## Layout
 
 ```
 src/nba_betting/
   data/       # schedule, box scores (odds adapter later)
-  features/   # as-of team/player features
-  models/     # game score engine (+ props later)
+  features/   # as-of pace / ORTG / DRTG / rest / B2B
+  models/     # Poisson score engine → ML / spread / total
   pricing/    # de-vig, fair odds, edge, Kelly
   backtest/   # walk-forward + metrics
-  slate/      # daily CLI: build board, lock, grade
+  slate/      # score a date from cache; lock/grade later
 data/
   raw/
     schedule/{season}.parquet   # also .csv mirror
@@ -35,7 +35,7 @@ data/
   processed/
   blind_predictions.jsonl
 tests/
-  fixtures/data/   # offline CSV fixtures for unit tests
+  fixtures/   # offline CSV fixtures (ingest + model)
 ```
 
 Raw dumps under `data/raw/` are **gitignored**. Override the root with
@@ -54,71 +54,60 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Or with uv:
-
-```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-```
-
 Copy env template (no real secrets in git):
 
 ```bash
 cp .env.example .env
-# later: set ODDS_API_KEY in .env or as a Cursor/GitHub secret
 ```
 
 ## Pull data (`nba_api`)
 
-Season strings use stats.nba.com form, e.g. `2024-25`.
-
 ```bash
-# Schedule (ScheduleLeagueV2) → data/raw/schedule/2024-25.parquet
 nba-betting data pull-schedule --season 2024-25
-
-# Team game logs / box lines (LeagueGameLog) → data/raw/boxscores/2024-25_team.parquet
 nba-betting data pull-boxes --season 2024-25
-
-# Both
-nba-betting data pull --season 2024-25
-
-# Re-fetch
-nba-betting data pull --season 2024-25 --force
-
-# Optional player logs
-nba-betting data pull-boxes --season 2024-25 --level player
+nba-betting data pull --season 2024-25          # both
+nba-betting data pull --season 2024-25 --force  # re-fetch
 ```
 
-After the first successful pull, `load_schedule` / `load_boxscores` (and a second CLI
-pull without `--force`) read only the local cache — no network.
+Caches land at `data/raw/schedule/` and `data/raw/boxscores/` (parquet + csv).
+After the first pull, loads are offline.
 
-## Other commands
+## Features + game model
+
+As-of ratings use **only** team games with `game_date < slate date` (no same-day /
+future leakage):
+
+- Possessions ≈ `FGA - OREB + TOV + 0.44 * FTA`
+- Pace (per 48), ORTG / DRTG from trailing window (default 20)
+- Rest days + B2B flags; home-court prior (~2.5 pts)
+
+Expected scores blend pace with offense/defense ratings; independent Poisson Monte
+Carlo yields moneyline, home-cover (vs `--spread`), and over (vs `--total`) from the
+**same** `(home_score, away_score)` draws.
+
+### Score a date (offline from cache)
 
 ```bash
-nba-betting --help
-nba-betting version
-nba-betting slate --help
-python -m nba_betting --help
+nba-betting model score --season 2024-25 --date 2024-10-25
+nba-betting slate score --season 2024-25 --date 2024-10-25 \
+  --spread -3.5 --total 220 --out data/processed/slate_2024-10-25.json
 ```
 
 ## Tests
 
-Default suite is offline (fixtures + injectable fetchers):
+Default suite is offline:
 
 ```bash
 pytest
 ```
 
-Optional live smoke (hits stats.nba.com):
+Optional live ingest smoke:
 
 ```bash
 RUN_LIVE_NBA_API=1 pytest -m live
 ```
 
 ## Environment variables
-
-See `.env.example`:
 
 | Variable | Purpose |
 |----------|---------|
@@ -129,4 +118,4 @@ See `.env.example`:
 
 ## Out of scope (so far)
 
-Game model, Odds API adapter, props, scrapers, Next.js / frontend, committed secrets.
+Odds API adapter, edge/Kelly pricing, props, scrapers, Next.js / frontend, secrets.
