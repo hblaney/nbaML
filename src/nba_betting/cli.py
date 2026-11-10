@@ -1,4 +1,4 @@
-"""CLI — data ingest, model scoring, slate helpers."""
+"""CLI — data ingest, odds, model scoring, slate edges."""
 
 from __future__ import annotations
 
@@ -15,11 +15,28 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 data_app = typer.Typer(help="Schedule and box-score ingest (nba_api).")
+odds_app = typer.Typer(help="The Odds API adapter (NBA featured markets).")
 model_app = typer.Typer(help="Game score model commands.")
 slate_app = typer.Typer(help="Daily slate commands.")
 app.add_typer(data_app, name="data")
+app.add_typer(odds_app, name="odds")
 app.add_typer(model_app, name="model")
 app.add_typer(slate_app, name="slate")
+
+
+def _load_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
+
+@app.callback()
+def main_callback() -> None:
+    """Load ``.env`` when present (never required)."""
+    _load_dotenv()
 
 
 @app.command("version")
@@ -77,6 +94,23 @@ def pull_all_cmd(
     boxes = pull_boxscores(season, root=data_dir, level="team", force=force)
     typer.echo(f"schedule cached: {sched}")
     typer.echo(f"boxscores cached: {boxes}")
+
+
+@odds_app.command("pull")
+def odds_pull_cmd(
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+) -> None:
+    """Pull NBA featured odds (h2h, spreads, totals) from The Odds API."""
+    from nba_betting.data.odds import OddsApiConfigError, pull_odds
+
+    try:
+        path = pull_odds(root=data_dir)
+    except OddsApiConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=0) from exc
+    typer.echo(f"odds cached: {path}")
 
 
 def _score_date_impl(
@@ -151,7 +185,7 @@ def slate_score_cmd(
     n_sims: int = typer.Option(20000, "--n-sims", help="Monte Carlo simulations"),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
 ) -> None:
-    """Alias: score today's (or any) slate date from cache."""
+    """Score a slate date from cache (model board)."""
     _score_date_impl(
         season=season,
         game_date=game_date,
@@ -163,13 +197,50 @@ def slate_score_cmd(
     )
 
 
+@slate_app.command("edges")
+def slate_edges_cmd(
+    season: str = typer.Option(..., "--season", help="Season like 2024-25"),
+    game_date: str = typer.Option(..., "--date", help="Game date YYYY-MM-DD"),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+    odds_file: Optional[Path] = typer.Option(
+        None, "--odds-file", help="Odds JSON cache (default: latest under data/raw/odds)"
+    ),
+    live: bool = typer.Option(
+        False, "--live", help="Fetch Odds API live (requires ODDS_API_KEY)"
+    ),
+    min_edge: float = typer.Option(
+        0.0, "--min-edge", help="Only show edges >= this (e.g. 0.03)"
+    ),
+    n_sims: int = typer.Option(10000, "--n-sims", help="Monte Carlo simulations"),
+    out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
+) -> None:
+    """Join model probs to book lines → edge table (degrades if no odds key/cache)."""
+    from nba_betting.slate.edges import format_edges_report, slate_edges, write_edges_json
+
+    rows, source = slate_edges(
+        season=season,
+        game_date=game_date,
+        root=data_dir,
+        odds_path=odds_file,
+        use_live=live,
+        min_edge=min_edge,
+        n_sims=n_sims,
+    )
+    typer.echo(format_edges_report(rows, source, min_edge=min_edge))
+    if out is not None:
+        path = write_edges_json(rows, out)
+        typer.echo(f"wrote {path}")
+
+
 @slate_app.command("build")
 def slate_build() -> None:
-    """Build today's board artifact (use ``slate score`` for model board)."""
-    typer.echo("slate build: use `nba-betting slate score --season … --date …`")
+    """Build today's board artifact (use ``slate score`` / ``slate edges``)."""
+    typer.echo("slate build: use `nba-betting slate score` or `slate edges`")
     raise typer.Exit(code=0)
 
 
 @slate_app.callback()
 def slate_callback() -> None:
-    """Daily slate: score, lock, grade."""
+    """Daily slate: score, edges, lock, grade."""
