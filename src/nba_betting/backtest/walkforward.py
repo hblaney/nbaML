@@ -8,6 +8,10 @@ from typing import Any
 import pandas as pd
 
 from nba_betting.backtest.bankroll import simulate_bankroll
+from nba_betting.backtest.calibration import (
+    apply_expanding_platt,
+    swap_calibrated_ml_probs,
+)
 from nba_betting.backtest.metrics import format_metrics, summarize_graded
 from nba_betting.data.boxscores import load_boxscores
 from nba_betting.data.schedule import load_schedule
@@ -101,8 +105,14 @@ def run_walkforward(
     n_sims: int = 5_000,
     starting_bankroll: float = STARTING_BANKROLL,
     paper_american: float = -110.0,
+    calibrate: bool = True,
+    rating_mode: str = "ema",
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Walk forward over schedule dates; features use only prior games."""
+    """Walk forward over schedule dates; features use only prior games.
+
+    When ``calibrate`` is True, moneyline probabilities are Platt-calibrated with
+    an expanding window (fit only on earlier games in this run).
+    """
     sched = schedule if schedule is not None else load_schedule(season, root=root)
     logs = team_logs if team_logs is not None else load_boxscores(season, level="team", root=root)
     actuals = _actuals_from_schedule(sched)
@@ -121,6 +131,7 @@ def run_walkforward(
             game_date=game_date,
             season=season,
             min_games=min_games,
+            rating_mode=rating_mode,
         )
         for j, feat in enumerate(feats):
             pred = predict_game(feat, n_sims=n_sims, seed=10_000 + i * 100 + j)
@@ -146,6 +157,10 @@ def run_walkforward(
         metrics = {"n_games": 0, "season": season}
         return graded, metrics
 
+    if calibrate and "p_home_win" in graded.columns and "home_win" in graded.columns:
+        graded = apply_expanding_platt(graded)
+        graded = swap_calibrated_ml_probs(graded)
+
     graded, bank_meta = simulate_bankroll(
         graded,
         starting_bankroll=starting_bankroll,
@@ -154,6 +169,8 @@ def run_walkforward(
     metrics = summarize_graded(graded)
     metrics.update(bank_meta)
     metrics["season"] = season
+    metrics["calibrate"] = bool(calibrate)
+    metrics["rating_mode"] = rating_mode
     return graded, metrics
 
 

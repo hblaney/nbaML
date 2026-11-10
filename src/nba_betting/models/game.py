@@ -16,6 +16,8 @@ from nba_betting.features.game_features import GameFeatures
 DEFAULT_N_SIMS = 20_000
 # Mild rest adjustment: B2B shaves expected efficiency a bit.
 B2B_POINTS_PENALTY = 1.5
+# Extra rest curve beyond binary B2B (2-day mild penalty, 4+ mild boost).
+REST_POINTS_SCALE = 1.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,19 @@ class GamePrediction:
         return asdict(self)
 
 
+def _rest_points_adjustment(days_rest: float, is_b2b: bool, *, scale: float = REST_POINTS_SCALE) -> float:
+    """Continuous rest adjustment on top of the binary B2B penalty."""
+    if scale == 0.0 or days_rest != days_rest:  # NaN
+        return 0.0
+    if is_b2b or days_rest <= 1.0:
+        return 0.0
+    if days_rest == 2.0:
+        return -0.5 * scale
+    if days_rest >= 4.0:
+        return 0.4 * scale
+    return 0.0
+
+
 def expected_scores(features: GameFeatures) -> tuple[float, float]:
     """Return (exp_home_pts, exp_away_pts) from pace/efficiency features."""
     pace = 0.5 * (features.home_pace + features.away_pace)
@@ -57,6 +72,9 @@ def expected_scores(features: GameFeatures) -> tuple[float, float]:
         home_pts -= B2B_POINTS_PENALTY
     if features.away_b2b:
         away_pts -= B2B_POINTS_PENALTY
+
+    home_pts += _rest_points_adjustment(features.home_rest_days, features.home_b2b)
+    away_pts += _rest_points_adjustment(features.away_rest_days, features.away_b2b)
 
     return max(home_pts, 1.0), max(away_pts, 1.0)
 
