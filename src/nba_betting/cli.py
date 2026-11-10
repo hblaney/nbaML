@@ -18,10 +18,14 @@ data_app = typer.Typer(help="Schedule and box-score ingest (nba_api).")
 odds_app = typer.Typer(help="The Odds API adapter (NBA featured markets).")
 model_app = typer.Typer(help="Game score model commands.")
 slate_app = typer.Typer(help="Daily slate commands.")
+backtest_app = typer.Typer(help="Walk-forward backtest.")
+ledger_app = typer.Typer(help="Blind lock / grade ledger.")
 app.add_typer(data_app, name="data")
 app.add_typer(odds_app, name="odds")
 app.add_typer(model_app, name="model")
 app.add_typer(slate_app, name="slate")
+app.add_typer(backtest_app, name="backtest")
+app.add_typer(ledger_app, name="ledger")
 
 
 def _load_dotenv() -> None:
@@ -244,3 +248,72 @@ def slate_build() -> None:
 @slate_app.callback()
 def slate_callback() -> None:
     """Daily slate: score, edges, lock, grade."""
+
+
+@backtest_app.command("run")
+def backtest_run_cmd(
+    season: str = typer.Option(..., "--season", help="Season like 2024-25"),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+    start_date: Optional[str] = typer.Option(None, "--start", help="First date YYYY-MM-DD"),
+    end_date: Optional[str] = typer.Option(None, "--end", help="Last date YYYY-MM-DD"),
+    n_sims: int = typer.Option(5000, "--n-sims", help="Sims per game"),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Optional graded predictions CSV/JSON path"
+    ),
+) -> None:
+    """Walk-forward backtest on cached schedule/boxes (Phase A: results-only)."""
+    import json
+
+    from nba_betting.backtest.walkforward import format_backtest_report, run_walkforward
+
+    graded, metrics = run_walkforward(
+        season=season,
+        root=data_dir,
+        start_date=start_date,
+        end_date=end_date,
+        n_sims=n_sims,
+    )
+    typer.echo(format_backtest_report(graded, metrics))
+    if out is not None:
+        out = Path(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.suffix.lower() == ".json":
+            payload = {"metrics": metrics, "games": graded.to_dict(orient="records")}
+            out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        else:
+            graded.to_csv(out, index=False)
+        typer.echo(f"wrote {out}")
+
+
+@ledger_app.command("lock")
+def ledger_lock_cmd(
+    season: str = typer.Option(..., "--season", help="Season like 2024-25"),
+    game_date: str = typer.Option(..., "--date", help="Game date YYYY-MM-DD"),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+    n_sims: int = typer.Option(10000, "--n-sims", help="Monte Carlo simulations"),
+) -> None:
+    """Lock model predictions for a date into the blind ledger (no overwrite)."""
+    from nba_betting.slate.ledger import lock_date
+
+    added, path = lock_date(
+        season=season, game_date=game_date, root=data_dir, n_sims=n_sims
+    )
+    typer.echo(f"locked {added} new game(s) → {path}")
+
+
+@ledger_app.command("grade")
+def ledger_grade_cmd(
+    season: str = typer.Option(..., "--season", help="Season like 2024-25"),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+) -> None:
+    """Grade locked ledger rows from cached finals; never rewrite locks."""
+    from nba_betting.slate.ledger import grade_ledger
+
+    n, path = grade_ledger(season=season, root=data_dir)
+    typer.echo(f"graded {n} row(s) → {path}")

@@ -15,8 +15,8 @@ Props (points / rebounds / assists / threes / PRA) are **v1.5**.
 
 ## Status
 
-Skeleton + ingest + as-of features/model + **Odds API adapter + edge table**.
-Kelly staking, full backtest harness, and props are not in yet.
+Ingest + features/model + odds/edges + **walk-forward backtest + blind ledger**
+(Phase A results-only grading + paper ¼ Kelly). Player props are not in yet.
 
 ## Layout
 
@@ -25,19 +25,14 @@ src/nba_betting/
   data/       # schedule, boxes, odds adapter
   features/   # as-of pace / ORTG / DRTG / rest / B2B
   models/     # Poisson score engine → ML / spread / total
-  pricing/    # de-vig, fair American, edge join
-  backtest/   # walk-forward + metrics (later)
-  slate/      # score + edges from cache
+  pricing/    # de-vig, fair American, edge, ¼ Kelly
+  backtest/   # walk-forward + metrics + paper bankroll
+  slate/      # score, edges, blind lock/grade
 data/
-  raw/
-    schedule/{season}.parquet
-    boxscores/{season}_team.parquet
-    odds/nba_*.json
+  raw/…
   processed/
   blind_predictions.jsonl
 ```
-
-Raw dumps under `data/raw/` are **gitignored**.
 
 ## Install
 
@@ -46,41 +41,54 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-# later: set ODDS_API_KEY in .env (never commit it)
 ```
 
-## Pull schedule / boxes
+## Daily loop (high level)
 
 ```bash
 nba-betting data pull --season 2024-25
+nba-betting odds pull                          # needs ODDS_API_KEY
+nba-betting slate score --season 2024-25 --date 2024-10-25
+nba-betting slate edges --season 2024-25 --date 2024-10-25 --min-edge 0.03
+nba-betting ledger lock --season 2024-25 --date 2024-10-25
+# after finals land in the schedule cache:
+nba-betting ledger grade --season 2024-25
 ```
 
-## Features + model score
+## Walk-forward backtest
+
+For each game date \(d\), ratings/features use **only** games with `date < d`.
+Phase A grades model ML favorites and model fair spread/total vs actual scores
+(no historical odds required). Paper bankroll applies flat $1 and **¼ Kelly**
+(cap **5%** bankroll) on ML picks at assumed **-110** juice (labeled as such).
 
 ```bash
-nba-betting model score --season 2024-25 --date 2024-10-25
-nba-betting slate score --season 2024-25 --date 2024-10-25
+nba-betting backtest run --season 2024-25
+nba-betting backtest run --season 2024-25 --start 2024-10-24 --out data/processed/bt.csv
 ```
 
-As-of ratings use only games with `game_date < slate date`. One Poisson engine
-drives moneyline, spread, and total probabilities.
+Metrics include ML hit rate, Brier, log loss, spread ATS / totals hit rates, and
+paper flat/Kelly ROI.
+
+## Blind ledger
+
+Locks append to `data/blind_predictions.jsonl`. Re-locking the same `game_id` is a
+no-op. `ledger grade` fills finals from the cached schedule and **never** rewrites
+locked prediction fields.
+
+```bash
+nba-betting ledger lock --season 2024-25 --date 2024-10-25
+nba-betting ledger grade --season 2024-25
+```
 
 ## Odds + edges
 
-Featured NBA markets via The Odds API (`basketball_nba`: `h2h,spreads,totals`,
-`regions=us`, American odds).
-
 ```bash
-# Requires ODDS_API_KEY; prints a clear message and exits 0 if missing
 nba-betting odds pull
-
-# Join model slate to latest odds cache (or --odds-file / --live)
 nba-betting slate edges --season 2024-25 --date 2024-10-25
-nba-betting slate edges --season 2024-25 --date 2024-10-25 --min-edge 0.03 --out edges.json
 ```
 
-Edge = model probability − de-vigged book implied. Without a key or cache, `slate
-edges` degrades to a clear no-odds message (no crash).
+Without `ODDS_API_KEY`, `odds pull` prints a clear message and exits 0.
 
 ## Tests
 
@@ -88,7 +96,7 @@ edges` degrades to a clear no-odds message (no crash).
 pytest
 ```
 
-Odds tests mock HTTP — **no real API key required**. Optional live `nba_api` smoke:
+Offline fixtures only by default (no real Odds API key). Optional live ingest:
 
 ```bash
 RUN_LIVE_NBA_API=1 pytest -m live
@@ -105,4 +113,4 @@ RUN_LIVE_NBA_API=1 pytest -m live
 
 ## Out of scope (so far)
 
-Kelly / bankroll, walk-forward backtest harness, props, scrapers, frontend, secrets in git.
+Player props (v1.5), historical odds CLV pipeline, scrapers, frontend, secrets in git.
