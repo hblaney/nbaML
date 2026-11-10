@@ -1,0 +1,52 @@
+{
+  "id": "evt_lal_bos",
+  "sport_key": "basketball_nba",
+  "commence_time": "2024-10-25T23:30:00Z",
+  "home_team": "Los Angeles Lakers",
+  "away_team": "Boston Celtics",
+  "bookmakers": [
+    {
+      "key": "draftkings",
+      "title": "DraftKings",
+      "markets": [
+        {
+          "key": "player_points",
+          "outcomes": [
+            {"name": "Over", "description": "LeBron James", "price": -115, "point": 25.5},
+            {"name": "Under", "description": "LeBron James", "price": -105, "point": 25.5},
+            {"name": "Over", "description": "Jayson Tatum", "price": -110, "point": 26.5},
+            {"name": "Under", "description": "Jayson Tatum", "price": -110, "point": 26.5}
+          ]
+        },
+        {
+          "key": "player_rebounds",
+          "outcomes": [
+            {"name": "Over", "description": "Anthony Davis", "price": -120, "point": 10.5},
+            {"name": "Under", "description": "Anthony Davis", "price": 100, "point": 10.5}
+          ]
+        },
+        {
+          "key": "player_assists",
+          "outcomes": [
+            {"name": "Over", "description": "LeBron James", "price": -110, "point": 7.5},
+            {"name": "Under", "description": "LeBron James", "price": -110, "point": 7.5}
+          ]
+        },
+        {
+          "key": "player_threes",
+          "outcomes": [
+            {"name": "Over", "description": "Stephen Curry", "price": -105, "point": 4.5},
+            {"name": "Under", "description": "Stephen Curry", "price": -115, "point": 4.5}
+          ]
+        },
+        {
+          "key": "player_points_rebounds_assists",
+          "outcomes": [
+            {"name": "Over", "description": "LeBron James", "price": -110, "point": 40.5},
+            {"name": "Under", "description": "LeBron James", "price": -110, "point": 40.5}
+          ]
+        }
+      ]
+    }
+  ]
+}
