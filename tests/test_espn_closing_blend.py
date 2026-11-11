@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from nba_betting.backtest.market_blend import blend_probs, choose_blend_weight, ml_prob_metrics
+from nba_betting.backtest.market_blend import (
+    blend_probs,
+    choose_blend_weight,
+    expanding_odds_ratings_blend,
+    ml_prob_metrics,
+)
 from nba_betting.data.espn_closing import _extract_provider_mls, _pick_best_provider
 from nba_betting.pricing.american import american_to_implied, devig_two_way
 
@@ -70,3 +75,18 @@ def test_choose_blend_prefers_better_confirm() -> None:
     )
     blended = ml_prob_metrics(blend, df.loc[df.season == "2024-25", "home_win"])
     assert blended["ml_brier"] <= mkt["ml_brier"] + 0.02
+
+
+def test_expanding_odds_ratings_blend_no_future_leak() -> None:
+    """Early rows use market; later weights fit only on prior outcomes."""
+    rng = np.random.default_rng(1)
+    n = 500
+    latent = rng.normal(0, 1, size=n)
+    y = (rng.random(n) < 1 / (1 + np.exp(-latent))).astype(float)
+    p_mkt = 1 / (1 + np.exp(-latent))
+    p_model = 1 / (1 + np.exp(-0.5 * latent + rng.normal(0, 0.5, size=n)))
+    out = expanding_odds_ratings_blend(p_mkt, p_model, y, min_train=100, refit_every=50)
+    assert out.shape == (n,)
+    np.testing.assert_allclose(out[:100], p_mkt[:100], rtol=0, atol=1e-9)
+    # Blended Brier should not explode vs market on this synthetic.
+    assert float(np.mean((out - y) ** 2)) < float(np.mean((p_model - y) ** 2)) + 0.05
