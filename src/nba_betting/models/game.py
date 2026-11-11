@@ -18,6 +18,11 @@ DEFAULT_N_SIMS = 20_000
 B2B_POINTS_PENALTY = 1.5
 # Extra rest curve beyond binary B2B (2-day mild penalty, 4+ mild boost).
 REST_POINTS_SCALE = 1.0
+# Prior-box availability: points per missing rotation-minute (top-N avg − last).
+AVAIL_POINTS_PER_MISSING_MIN = 0.0  # off by default; confirm-gated when enabled
+# Schedule density penalties (3-in-4 / heavy weeks).
+SCHED_THREE_IN_FOUR_PENALTY = 0.0
+SCHED_GAMES7_PENALTY = 0.0  # per game above 3 in last 7 days
 
 
 @dataclass(frozen=True)
@@ -57,7 +62,14 @@ def _rest_points_adjustment(days_rest: float, is_b2b: bool, *, scale: float = RE
     return 0.0
 
 
-def expected_scores(features: GameFeatures) -> tuple[float, float]:
+def expected_scores(
+    features: GameFeatures,
+    *,
+    avail_points_per_missing_min: float = AVAIL_POINTS_PER_MISSING_MIN,
+    sched_three_in_four_penalty: float = SCHED_THREE_IN_FOUR_PENALTY,
+    sched_games7_penalty: float = SCHED_GAMES7_PENALTY,
+    rest_scale: float = REST_POINTS_SCALE,
+) -> tuple[float, float]:
     """Return (exp_home_pts, exp_away_pts) from pace/efficiency features."""
     pace = 0.5 * (features.home_pace + features.away_pace)
     # Blended offensive/defensive ratings → points per 100 possessions.
@@ -69,12 +81,35 @@ def expected_scores(features: GameFeatures) -> tuple[float, float]:
     home_pts += features.home_court_points
 
     if features.home_b2b:
-        home_pts -= B2B_POINTS_PENALTY
+        home_pts -= B2B_POINTS_PENALTY * float(rest_scale)
     if features.away_b2b:
-        away_pts -= B2B_POINTS_PENALTY
+        away_pts -= B2B_POINTS_PENALTY * float(rest_scale)
 
-    home_pts += _rest_points_adjustment(features.home_rest_days, features.home_b2b)
-    away_pts += _rest_points_adjustment(features.away_rest_days, features.away_b2b)
+    home_pts += _rest_points_adjustment(
+        features.home_rest_days, features.home_b2b, scale=float(rest_scale)
+    )
+    away_pts += _rest_points_adjustment(
+        features.away_rest_days, features.away_b2b, scale=float(rest_scale)
+    )
+
+    if avail_points_per_missing_min:
+        home_pts -= float(avail_points_per_missing_min) * float(
+            features.home_missing_minutes
+        )
+        away_pts -= float(avail_points_per_missing_min) * float(
+            features.away_missing_minutes
+        )
+
+    if sched_three_in_four_penalty:
+        home_pts -= float(sched_three_in_four_penalty) * float(features.home_three_in_four)
+        away_pts -= float(sched_three_in_four_penalty) * float(features.away_three_in_four)
+    if sched_games7_penalty:
+        home_pts -= float(sched_games7_penalty) * max(
+            0.0, float(features.home_games_last7) - 3.0
+        )
+        away_pts -= float(sched_games7_penalty) * max(
+            0.0, float(features.away_games_last7) - 3.0
+        )
 
     return max(home_pts, 1.0), max(away_pts, 1.0)
 
@@ -147,9 +182,17 @@ def predict_game(
     market_total: float | None = None,
     n_sims: int = DEFAULT_N_SIMS,
     seed: int = 0,
+    avail_points_per_missing_min: float = AVAIL_POINTS_PER_MISSING_MIN,
+    sched_three_in_four_penalty: float = SCHED_THREE_IN_FOUR_PENALTY,
+    sched_games7_penalty: float = SCHED_GAMES7_PENALTY,
 ) -> GamePrediction:
     """Full pipeline: features → expected scores → sims → market probabilities."""
-    exp_home, exp_away = expected_scores(features)
+    exp_home, exp_away = expected_scores(
+        features,
+        avail_points_per_missing_min=avail_points_per_missing_min,
+        sched_three_in_four_penalty=sched_three_in_four_penalty,
+        sched_games7_penalty=sched_games7_penalty,
+    )
     rng = np.random.default_rng(seed)
     home_s, away_s = simulate_scores(exp_home, exp_away, n_sims=n_sims, rng=rng)
     stats = derive_market_probs(
