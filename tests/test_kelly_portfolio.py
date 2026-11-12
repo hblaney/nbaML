@@ -6,16 +6,21 @@ import numpy as np
 import pandas as pd
 
 from nba_betting.pricing.kelly_portfolio import (
+    build_prop_candidate_legs,
     build_shrunk_legs,
+    compute_shin_clv_bps,
+    debiased_hubacek_probs,
     enumerate_kelly_candidates,
     fit_oos_shrinkage,
     run_kelly_compounding_selector,
+    run_unified_kelly_portfolio,
     select_daily_kelly_portfolio,
     shrink_probs,
     simulate_seasonal_kelly,
     single_ticket_expected_log_growth,
     single_ticket_kelly_fraction,
     solve_daily_joint_kelly,
+    winsorize_prob_by_ev_cap,
 )
 
 
@@ -135,3 +140,74 @@ def test_run_kelly_compounding_selector_multimarket() -> None:
     assert not legs.empty
     assert summary["ending_bankroll"] > 50.0
     assert summary["n_wins"] == summary["n_staked"]
+
+
+def test_hubacek_debiasing_and_ev_winsorization() -> None:
+    # Stationary Hubáček formula: p_hub = pi + (p_true - pi) / (1 - c)
+    pi = 0.55
+    p_true = 0.61
+    c = 0.65
+    p_hub = pi + (p_true - pi) / (1.0 - c)
+    recovered = float(debiased_hubacek_probs(p_hub, pi, c_decorr=c))
+    assert abs(recovered - p_true) < 1e-12
+
+    # EV cap at +8% on 2.00 decimal caps effective p at 0.54
+    p_capped = float(winsorize_prob_by_ev_cap(0.70, 2.00, ev_cap=0.08))
+    assert abs(p_capped - 0.54) < 1e-12
+    assert abs(float(compute_shin_clv_bps(0.51, 0.545)) - 350.0) < 1e-9
+
+
+def test_unified_prop_and_game_portfolio_no_future_leakage() -> None:
+    props = pd.DataFrame(
+        {
+            "season": ["2024-25"] * 6,
+            "game_id": ["g1", "g1", "g2", "g2", "g3", "g4"],
+            "game_date": pd.to_datetime(
+                ["2024-11-01", "2024-11-01", "2024-11-01", "2024-11-01", "2024-11-02", "2024-11-02"]
+            ),
+            "prop_type": ["points", "rebounds", "assists", "points", "points", "pra"],
+            "p_model_over": [0.38, 0.42, 0.36, 0.48, 0.37, 0.35],
+            "p_mkt_over": [0.50, 0.50, 0.50, 0.50, 0.50, 0.50],
+            "over_decimal": [1.87] * 6,
+            "under_decimal": [1.91] * 6,
+            "best_over_decimal_same_line": [1.91] * 6,
+            "best_under_decimal_same_line": [1.95] * 6,
+            "over_win": [0, 1, 0, 1, 0, 0],
+        }
+    )
+    prop_legs = build_prop_candidate_legs(props, shrink_w=0.82, min_leg_ev=0.015, ev_cap=0.08, use_best_same_line=True)
+    # Dedupes to at most one prop per game_id
+    assert len(prop_legs) == 4
+    assert prop_legs["game_id"].nunique() == 4
+
+    graded_a, summary_a = run_unified_kelly_portfolio(
+        prop_legs,
+        sizes=(1, 2),
+        max_decimal=4.2,
+        c_kelly=1.0,
+        daily_cap=0.20,
+        per_bet_cap=0.08,
+        max_tickets_per_day=2,
+        initial_bankroll=50.0,
+    )
+    assert summary_a["ending_bankroll"] > 50.0
+
+    # Mutate outcomes on day 2 (2024-11-02) -> day 1 stakes must remain bitwise identical
+    props_mut = props.copy()
+    props_mut.loc[props_mut["game_date"] == pd.Timestamp("2024-11-02"), "over_win"] = 1
+    prop_legs_mut = build_prop_candidate_legs(
+        props_mut, shrink_w=0.82, min_leg_ev=0.015, ev_cap=0.08, use_best_same_line=True
+    )
+    graded_b, _ = run_unified_kelly_portfolio(
+        prop_legs_mut,
+        sizes=(1, 2),
+        max_decimal=4.2,
+        c_kelly=1.0,
+        daily_cap=0.20,
+        per_bet_cap=0.08,
+        max_tickets_per_day=2,
+        initial_bankroll=50.0,
+    )
+    d1_a = graded_a[graded_a["game_date"] == pd.Timestamp("2024-11-01")]["stake"].to_numpy()
+    d1_b = graded_b[graded_b["game_date"] == pd.Timestamp("2024-11-01")]["stake"].to_numpy()
+    np.testing.assert_array_equal(d1_a, d1_b)

@@ -60,6 +60,45 @@ def shrink_probs(
     return _clip_prob(out)
 
 
+def debiased_hubacek_probs(
+    p_hubacek: np.ndarray | pd.Series | float,
+    p_market_shin: np.ndarray | pd.Series | float,
+    *,
+    c_decorr: float = 0.65,
+    w_override: float | None = None,
+) -> np.ndarray:
+    """Invert Hubáček stationary amplification ``p* = pi + (p_true - pi)/(1 - c)``.
+
+    When ``w_override`` is omitted, uses the exact analytical inverse ``w = 1 - c_decorr``
+    (e.g. ``0.35`` for ``c = 0.65``, matching empirical 2022-24 Log-Loss optimum ``0.366``).
+    """
+    w = float(1.0 - float(c_decorr)) if w_override is None else float(w_override)
+    return shrink_probs(p_hubacek, p_market_shin, w=w, mode="linear")
+
+
+def winsorize_prob_by_ev_cap(
+    p_win: np.ndarray | pd.Series | float,
+    decimal_odds: np.ndarray | pd.Series | float,
+    *,
+    ev_cap: float | None = 0.08,
+) -> np.ndarray:
+    """Cap effective Kelly probability at ``(1 + ev_cap) / decimal_odds`` to prevent tail overbetting."""
+    p = _clip_prob(p_win)
+    if ev_cap is None:
+        return p
+    dec = np.maximum(np.asarray(decimal_odds, dtype=float), 1.0 + 1e-6)
+    p_max = (1.0 + float(ev_cap)) / dec
+    return _clip_prob(np.minimum(p, p_max))
+
+
+def compute_shin_clv_bps(
+    p_open_shin: np.ndarray | pd.Series | float,
+    p_close_shin: np.ndarray | pd.Series | float,
+) -> np.ndarray:
+    """Return Closing Line Value in basis points: ``10000 * (p_close_shin - p_open_shin)``."""
+    return 10000.0 * (np.asarray(p_close_shin, dtype=float) - np.asarray(p_open_shin, dtype=float))
+
+
 def fit_oos_shrinkage(
     p_model: np.ndarray | pd.Series,
     p_market_novig: np.ndarray | pd.Series,
@@ -491,6 +530,7 @@ def select_daily_kelly_portfolio(
     max_tickets_per_day: int = 3,
     c_kelly: float = 0.25,
     daily_cap: float = 0.15,
+    per_bet_cap: float | None = None,
 ) -> pd.DataFrame:
     """Pick daily non-overlapping tickets by ``expected_log_growth`` and size via joint Kelly."""
     if candidates.empty:
@@ -518,6 +558,11 @@ def select_daily_kelly_portfolio(
             c_kelly=c_kelly,
             daily_cap=daily_cap,
         )
+        if per_bet_cap is not None:
+            fracs = np.minimum(fracs, float(per_bet_cap))
+            s_f = float(fracs.sum())
+            if s_f > float(daily_cap) and s_f > 0:
+                fracs = fracs * (float(daily_cap) / s_f)
         sub["stake_frac"] = fracs
         sub["day_expected_log_growth"] = day_g
         sub = sub[sub["stake_frac"] > 1e-6].copy()
@@ -834,3 +879,111 @@ def run_kelly_compounding_selector(
         "include_spread_total": bool(include_spread_total),
     }
     return legs, graded, summary
+
+
+def build_prop_candidate_legs(
+    props: pd.DataFrame,
+    *,
+    shrink_w: float = 0.8183,
+    min_leg_ev: float = 0.015,
+    ev_cap: float | None = 0.08,
+    use_best_same_line: bool = False,
+    min_decimal: float = 1.50,
+    max_decimal: float = 2.65,
+) -> pd.DataFrame:
+    """Select at most one highest-EV shrunk player-prop leg per ``(season, game_id)``.
+
+    Restricting to one prop per game guarantees cross-game independence when combined
+    with distinct-game daily Kelly allocation.
+    """
+    if props.empty:
+        return pd.DataFrame()
+
+    p = props.copy()
+    ps_ov = shrink_probs(p["p_model_over"], p["p_mkt_over"], w=shrink_w, mode="linear")
+    ps_un = 1.0 - ps_ov
+
+    if use_best_same_line and {"best_over_decimal_same_line", "best_under_decimal_same_line"}.issubset(p.columns):
+        d_ov = p["best_over_decimal_same_line"].fillna(p["over_decimal"]).to_numpy(float)
+        d_un = p["best_under_decimal_same_line"].fillna(p["under_decimal"]).to_numpy(float)
+    else:
+        d_ov = p["over_decimal"].to_numpy(float)
+        d_un = p["under_decimal"].to_numpy(float)
+
+    ev_ov = np.where((d_ov >= min_decimal) & (d_ov <= max_decimal), ps_ov * d_ov - 1.0, -1.0)
+    ev_un = np.where((d_un >= min_decimal) & (d_un <= max_decimal), ps_un * d_un - 1.0, -1.0)
+    pick_ov = ev_ov >= ev_un
+
+    best_ev = np.where(pick_ov, ev_ov, ev_un)
+    best_ps_raw = np.where(pick_ov, ps_ov, ps_un)
+    best_dec = np.where(pick_ov, d_ov, d_un)
+    best_ps = winsorize_prob_by_ev_cap(best_ps_raw, best_dec, ev_cap=ev_cap)
+    best_pn = np.where(pick_ov, p["p_mkt_over"].to_numpy(float), 1.0 - p["p_mkt_over"].to_numpy(float))
+    best_out = np.where(pick_ov, p["over_win"].to_numpy(float) == 1.0, p["over_win"].to_numpy(float) == 0.0).astype(float)
+
+    p["_ev"] = best_ev
+    p["_ps"] = best_ps
+    p["_pn"] = best_pn
+    p["_dec"] = best_dec
+    p["_out"] = best_out
+    p["_side"] = np.where(pick_ov, "over", "under")
+
+    keep = p[p["_ev"] >= float(min_leg_ev)].sort_values("_ev", ascending=False)
+    if keep.empty:
+        return pd.DataFrame()
+    dedup_cols = ["season", "game_id"] if "season" in keep.columns else ["game_id"]
+    keep = keep.drop_duplicates(subset=dedup_cols, keep="first")
+
+    rows: list[dict[str, Any]] = []
+    for _, r in keep.iterrows():
+        dec = float(r["_dec"])
+        am = (dec - 1.0) * 100.0 if dec >= 2.0 else -100.0 / (dec - 1.0)
+        rows.append(
+            {
+                "season": r.get("season"),
+                "game_date": pd.Timestamp(r["game_date"]).normalize(),
+                "game_id": str(r["game_id"]),
+                "market": f"prop_{r.get('prop_type', 'stat')}",
+                "side": str(r["_side"]),
+                "p_shrunk": float(r["_ps"]),
+                "p_model_raw": float(r["p_model_over"] if r["_side"] == "over" else 1.0 - float(r["p_model_over"])),
+                "p_novig": float(r["_pn"]),
+                "american": float(am),
+                "decimal": dec,
+                "leg_outcome": float(r["_out"]),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["game_date", "game_id"]).reset_index(drop=True)
+
+
+def run_unified_kelly_portfolio(
+    candidate_legs: pd.DataFrame,
+    *,
+    sizes: Sequence[int] = (1, 2),
+    max_decimal: float | None = 4.2,
+    min_ev: float = 0.0,
+    c_kelly: float = 1.0,
+    daily_cap: float = 0.25,
+    per_bet_cap: float = 0.08,
+    max_tickets_per_day: int = 1,
+    initial_bankroll: float = 50.0,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Run unified multi-stream (open game + close game + props) daily Kelly allocation."""
+    cands = enumerate_kelly_candidates(
+        candidate_legs,
+        sizes=sizes,
+        c_kelly=1.0,
+        daily_cap=0.95,
+        min_decimal=1.10,
+        max_decimal=max_decimal,
+        min_ev=min_ev,
+        min_log_growth=1e-7,
+    )
+    portfolio = select_daily_kelly_portfolio(
+        cands,
+        max_tickets_per_day=max_tickets_per_day,
+        c_kelly=c_kelly,
+        daily_cap=daily_cap,
+        per_bet_cap=per_bet_cap,
+    )
+    return simulate_seasonal_kelly(portfolio, initial_bankroll=initial_bankroll)

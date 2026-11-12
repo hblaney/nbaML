@@ -5,16 +5,21 @@ from nba_betting.pricing.edge import EdgeRow, build_edge_rows, format_edge_table
 from nba_betting.pricing.kelly import kelly_fraction, stake_amount
 from nba_betting.pricing.kelly_portfolio import (
     build_extra_spread_total_legs,
+    build_prop_candidate_legs,
     build_shrunk_legs,
+    compute_shin_clv_bps,
+    debiased_hubacek_probs,
     enumerate_kelly_candidates,
     fit_oos_shrinkage,
     run_kelly_compounding_selector,
+    run_unified_kelly_portfolio,
     select_daily_kelly_portfolio,
     shrink_probs,
     simulate_seasonal_kelly,
     single_ticket_expected_log_growth,
     single_ticket_kelly_fraction,
     solve_daily_joint_kelly,
+    winsorize_prob_by_ev_cap,
 )
 from nba_betting.pricing.parlay_ev import (
     build_eligible_legs,
@@ -38,9 +43,12 @@ __all__ = [
     "build_edge_rows",
     "build_eligible_legs",
     "build_extra_spread_total_legs",
+    "build_prop_candidate_legs",
     "build_prop_edge_rows",
     "build_shrunk_legs",
     "clears_parlay_price",
+    "compute_shin_clv_bps",
+    "debiased_hubacek_probs",
     "enumerate_kelly_candidates",
     "enumerate_parlays",
     "enumerate_same_day_parlays",
@@ -53,6 +61,7 @@ __all__ = [
     "parlay_ev_per_unit",
     "run_kelly_compounding_selector",
     "run_parlay_selector",
+    "run_unified_kelly_portfolio",
     "select_daily_kelly_portfolio",
     "select_nonoverlapping_tickets",
     "select_top_edge_tickets",
@@ -63,4 +72,5 @@ __all__ = [
     "solve_daily_joint_kelly",
     "stake_amount",
     "summarize_ticket_pnl",
+    "winsorize_prob_by_ev_cap",
 ]
