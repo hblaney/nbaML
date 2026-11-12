@@ -137,6 +137,24 @@ def odds_pull_props_cmd(
     typer.echo(f"prop odds cached: {path}")
 
 
+@odds_app.command("pull-derivatives")
+def odds_pull_derivatives_cmd(
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+) -> None:
+    """Pull NBA 1Q/1H derivative odds (h2h_q1, spreads_q1, totals_q1, h2h_h1, spreads_h1, totals_h1)."""
+    from nba_betting.data.derivative_odds import pull_derivative_odds
+    from nba_betting.data.odds import OddsApiConfigError
+
+    try:
+        path = pull_derivative_odds(root=data_dir)
+    except OddsApiConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=0) from exc
+    typer.echo(f"derivative odds cached: {path}")
+
+
 def _score_date_impl(
     *,
     season: str,

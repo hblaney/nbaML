@@ -20,6 +20,14 @@ ODDS_SPORT_KEY = "basketball_nba"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 DEFAULT_REGIONS = "us"
 DEFAULT_MARKETS = "h2h,spreads,totals"
+DERIVATIVE_MARKET_KEYS: tuple[str, ...] = (
+    "h2h_q1",
+    "spreads_q1",
+    "totals_q1",
+    "h2h_h1",
+    "spreads_h1",
+    "totals_h1",
+)
 
 OddsHttpGetter = Callable[[str, dict[str, str]], Any]
 
