@@ -81,6 +81,11 @@ def build_eligible_legs(
     novig_home_col: str = "p_home_novig",
     home_ml_col: str = "home_ml",
     away_ml_col: str = "away_ml",
+    exec_home_ml_col: str | None = None,
+    exec_away_ml_col: str | None = None,
+    exec_home_book_col: str | None = None,
+    exec_away_book_col: str | None = None,
+    devig_method: str | None = None,
     y_home_col: str = "home_win",
     min_fair_edge: float = 0.0,
     require_vs_vigged: bool = True,
@@ -91,29 +96,52 @@ def build_eligible_legs(
 
     Default: model must beat the **vigged** straight implied (harder than novig).
     ``min_fair_edge`` is an extra floor vs de-vig fair (0 disables).
+    When ``devig_method`` is supplied (e.g. ``"shin"``, ``"power"``, ``"probit"``),
+    recomputes ``(fair_h, fair_a)`` from ``(home_ml_col, away_ml_col)`` using that
+    devigging method. When ``exec_home_ml_col`` / ``exec_away_ml_col`` are supplied,
+    uses best executable cross-book prices for payout grading and vigged-price gating.
     """
-    need = [model_home_col, novig_home_col, home_ml_col, away_ml_col, y_home_col, date_col, game_id_col]
+    from nba_betting.pricing.american import devig_two_way
+
+    need = [model_home_col, home_ml_col, away_ml_col, y_home_col, date_col, game_id_col]
+    if devig_method is None:
+        need.append(novig_home_col)
     missing = [c for c in need if c not in games.columns]
     if missing:
         raise ValueError(f"games missing columns: {missing}")
 
+    eh_col = exec_home_ml_col or home_ml_col
+    ea_col = exec_away_ml_col or away_ml_col
+
     rows: list[dict[str, Any]] = []
     for _, g in games.iterrows():
         p_h = float(g[model_home_col])
-        fair_h = float(g[novig_home_col])
+        ref_h_ml = float(g[home_ml_col])
+        ref_a_ml = float(g[away_ml_col])
+        if (
+            devig_method is not None
+            and np.isfinite(ref_h_ml)
+            and np.isfinite(ref_a_ml)
+            and ref_h_ml != 0
+            and ref_a_ml != 0
+        ):
+            fair_h, fair_a = devig_two_way(ref_h_ml, ref_a_ml, method=devig_method)
+        else:
+            fair_h = float(g[novig_home_col])
+            fair_a = 1.0 - fair_h
         p_a = 1.0 - p_h
-        fair_a = 1.0 - fair_h
         home_won = float(g[y_home_col])
+        h_book = g.get(exec_home_book_col) if exec_home_book_col else g.get("provider")
+        a_book = g.get(exec_away_book_col) if exec_away_book_col else g.get("provider")
         base = {
             "season": g.get("season"),
             "game_date": pd.Timestamp(g[date_col]).normalize(),
             "game_id": str(g[game_id_col]),
-            "provider": g.get("provider"),
             "market": "ml",
         }
-        for side, p_m, p_fair, price, won in (
-            ("home", p_h, fair_h, float(g[home_ml_col]), home_won == 1.0),
-            ("away", p_a, fair_a, float(g[away_ml_col]), home_won == 0.0),
+        for side, p_m, p_fair, price, book_used, won in (
+            ("home", p_h, fair_h, float(g[eh_col]), h_book, home_won == 1.0),
+            ("away", p_a, fair_a, float(g[ea_col]), a_book, home_won == 0.0),
         ):
             if not np.isfinite(price) or price == 0:
                 continue
@@ -129,6 +157,7 @@ def build_eligible_legs(
             rows.append(
                 {
                     **base,
+                    "provider": book_used,
                     "side": side,
                     "p_model": p_m,
                     "p_fair_novig": p_fair,
@@ -371,7 +400,11 @@ def select_nonoverlapping_tickets(
     max_per_day: int = 1,
 ) -> pd.DataFrame:
     """Greedy per-day by ``price_edge`` (fallback ``ev_per_unit``)."""
-    score = "price_edge" if (not candidates.empty and "price_edge" in candidates.columns) else "ev_per_unit"
+    score = (
+        "price_edge"
+        if (not candidates.empty and "price_edge" in candidates.columns)
+        else "ev_per_unit"
+    )
     return select_top_edge_tickets(candidates, max_per_day=max_per_day, score_col=score)
 
 
@@ -461,7 +494,9 @@ def summarize_ticket_pnl(
         "roi": (total_pnl / total_stake) if total_stake > 0 else None,
         "max_drawdown": dd,
         "avg_ev_per_unit": float(graded["ev_per_unit"].mean()),
-        "avg_price_edge": float(graded["price_edge"].mean()) if "price_edge" in graded.columns else None,
+        "avg_price_edge": float(graded["price_edge"].mean())
+        if "price_edge" in graded.columns
+        else None,
         "avg_parlay_decimal": float(graded["parlay_decimal"].mean()),
         "by_n_legs": by_legs,
         "stake_per_ticket": float(stake),
@@ -519,7 +554,11 @@ def run_parlay_selector(
     summary = summarize_ticket_pnl(graded, starting_bankroll=starting_bankroll, stake=stake)
     summary["n_eligible_legs"] = int(len(legs))
     summary["n_candidate_tickets"] = int(len(cands))
-    summary["n_same_game"] = int(graded["same_game"].sum()) if (not graded.empty and "same_game" in graded.columns) else 0
+    summary["n_same_game"] = (
+        int(graded["same_game"].sum())
+        if (not graded.empty and "same_game" in graded.columns)
+        else 0
+    )
     summary["params"] = {
         "min_fair_edge": float(min_fair_edge),
         "require_vs_vigged": bool(require_vs_vigged),
@@ -534,3 +573,76 @@ def run_parlay_selector(
         "model_home_col": model_home_col,
     }
     return legs, graded, summary
+
+
+def simulate_seasonal_parlay_bankroll(
+    tickets: pd.DataFrame,
+    *,
+    starting_bankroll: float = 50.0,
+    stake_pct: float = 0.01,
+    kelly_frac: float | None = None,
+    max_bet_frac: float = 0.05,
+    min_stake: float = 0.01,
+) -> dict[str, Any]:
+    """Replay sequential seasonal bankrolls (resetting to ``starting_bankroll`` per season).
+
+    Stake is floored to cents (``floor(pct * bankroll * 100) / 100``), matching the
+    protocol in ``docs/nba-parlay-ev.md``. When ``kelly_frac`` is set, uses fractional
+    Kelly on ``(p_joint_model, parlay_decimal)`` capped at ``max_bet_frac``.
+    """
+    import math
+
+    by_season: dict[str, dict[str, Any]] = {}
+    if tickets.empty:
+        return {"starting_bankroll": float(starting_bankroll), "seasons": by_season}
+
+    df = tickets.sort_values(["season", "game_date"]).reset_index(drop=True)
+    for season, g in df.groupby("season", sort=True):
+        br = float(starting_bankroll)
+        peak = br
+        max_dd = 0.0
+        n_staked = 0
+        n_wins = 0
+        total_staked = 0.0
+
+        for _, row in g.iterrows():
+            dec = float(row["parlay_decimal"])
+            if kelly_frac is not None:
+                b = dec - 1.0
+                p = float(row["p_joint_model"])
+                full_k = (b * p - (1.0 - p)) / b if b > 0 else 0.0
+                frac = min(max(0.0, full_k * float(kelly_frac)), float(max_bet_frac))
+            else:
+                frac = float(stake_pct)
+
+            stake = math.floor(br * frac * 100.0) / 100.0
+            if stake < float(min_stake) or stake > br:
+                continue
+            n_staked += 1
+            total_staked += stake
+            if bool(row["ticket_won"]):
+                br = round(br + stake * (dec - 1.0), 6)
+                n_wins += 1
+            else:
+                br = round(br - stake, 6)
+            peak = max(peak, br)
+            max_dd = min(max_dd, br - peak)
+
+        by_season[str(season)] = {
+            "n_tickets": n_staked,
+            "n_wins": n_wins,
+            "start_bankroll": float(starting_bankroll),
+            "end_bankroll": round(br, 2),
+            "net_profit": round(br - float(starting_bankroll), 2),
+            "total_staked": round(total_staked, 2),
+            "roi": ((br - float(starting_bankroll)) / total_staked) if total_staked > 0 else None,
+            "max_drawdown": round(max_dd, 2),
+            "clears_start": bool(br > float(starting_bankroll)),
+        }
+
+    return {
+        "starting_bankroll": float(starting_bankroll),
+        "stake_pct": stake_pct,
+        "kelly_frac": kelly_frac,
+        "seasons": by_season,
+    }

@@ -107,12 +107,17 @@ def odds_pull_cmd(
     data_dir: Optional[Path] = typer.Option(
         None, "--data-dir", help="Override data root (default: ./data)"
     ),
+    multi_book: bool = typer.Option(
+        False,
+        "--multi-book",
+        help="Fetch explicit sharp + US books (DK, FD, MGM, Caesars, ESPN BET, Pinny, LowVig)",
+    ),
 ) -> None:
     """Pull NBA featured odds (h2h, spreads, totals) from The Odds API."""
-    from nba_betting.data.odds import OddsApiConfigError, pull_odds
+    from nba_betting.data.odds import OddsApiConfigError, pull_multi_book_odds, pull_odds
 
     try:
-        path = pull_odds(root=data_dir)
+        path = pull_multi_book_odds(root=data_dir) if multi_book else pull_odds(root=data_dir)
     except OddsApiConfigError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=0) from exc
@@ -174,9 +179,7 @@ def model_score_cmd(
     data_dir: Optional[Path] = typer.Option(
         None, "--data-dir", help="Override data root (default: ./data)"
     ),
-    spread: float = typer.Option(
-        0.0, "--spread", help="Home market spread (e.g. -3.5); default 0"
-    ),
+    spread: float = typer.Option(0.0, "--spread", help="Home market spread (e.g. -3.5); default 0"),
     total: Optional[float] = typer.Option(
         None, "--total", help="Market total; default model expected total"
     ),
@@ -231,12 +234,8 @@ def slate_edges_cmd(
     odds_file: Optional[Path] = typer.Option(
         None, "--odds-file", help="Odds JSON cache (default: latest under data/raw/odds)"
     ),
-    live: bool = typer.Option(
-        False, "--live", help="Fetch Odds API live (requires ODDS_API_KEY)"
-    ),
-    min_edge: float = typer.Option(
-        0.0, "--min-edge", help="Only show edges >= this (e.g. 0.03)"
-    ),
+    live: bool = typer.Option(False, "--live", help="Fetch Odds API live (requires ODDS_API_KEY)"),
+    min_edge: float = typer.Option(0.0, "--min-edge", help="Only show edges >= this (e.g. 0.03)"),
     n_sims: int = typer.Option(10000, "--n-sims", help="Monte Carlo simulations"),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
 ) -> None:
@@ -256,6 +255,162 @@ def slate_edges_cmd(
     if out is not None:
         path = write_edges_json(rows, out)
         typer.echo(f"wrote {path}")
+
+
+@slate_app.command("shop")
+def slate_shop_cmd(
+    odds_file: Optional[Path] = typer.Option(
+        None,
+        "--odds-file",
+        help="Multi-book Odds API JSON or captured Markdown slate (e.g. docs/nba-live-slate.md)",
+    ),
+    live: bool = typer.Option(
+        False, "--live", help="Fetch multi-book Odds API live (requires ODDS_API_KEY)"
+    ),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+    books: str = typer.Option(
+        "draftkings,fanduel,betmgm,caesars,espnbet,betrivers,pinnacle,lowvig,bovada",
+        "--books",
+        help="Comma-separated execution books to route parlays across (or 'all')",
+    ),
+    devig: str = typer.Option(
+        "shin",
+        "--devig",
+        help="Devigging method: shin | power | probit | multiplicative | additive",
+    ),
+    markets: str = typer.Option(
+        "moneyline,spread,total",
+        "--markets",
+        help="Comma-separated markets to include (moneyline,spread,total)",
+    ),
+    sizes: str = typer.Option(
+        "1,2,3",
+        "--sizes",
+        help="Comma-separated ticket leg counts (default: 1,2,3 for singles + parlays)",
+    ),
+    min_ev: float = typer.Option(
+        0.0, "--min-ev", help="Minimum parlay EV per unit stake (e.g. 0.0 = strictly +EV)"
+    ),
+    bankroll: float = typer.Option(
+        50.0, "--bankroll", help="Bankroll for fractional-Kelly sizing (default: $50)"
+    ),
+    max_per_day: int = typer.Option(
+        3, "--max-per-day", help="Max non-overlapping routed parlays per slate date"
+    ),
+    season: Optional[str] = typer.Option(
+        None, "--season", help="Optional season (with --date) to blend cached model probs"
+    ),
+    game_date: Optional[str] = typer.Option(
+        None, "--date", help="Optional game date YYYY-MM-DD to filter/blend model probs"
+    ),
+    model_weight: float = typer.Option(
+        0.0, "--model-weight", help="Weight on model probs vs sharp consensus [0..1]"
+    ),
+    out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
+) -> None:
+    """Devig multi-book consensus (Shin/Power/Probit), flag outliers, and route +EV parlays."""
+    import json
+
+    from nba_betting.data.odds import (
+        OddsApiConfigError,
+        fetch_nba_multi_book_odds,
+        latest_multi_book_odds_cache,
+    )
+    from nba_betting.pricing.shopping import (
+        ODDS_API_BOOKMAKER_KEYS as SHOP_BM_KEYS,
+        analyze_slate_markets,
+        format_market_shopping_report,
+        load_multi_book_file,
+        parse_odds_api_multi_book,
+        route_parlays_across_books,
+    )
+
+    exec_books: list[str] | None
+    if books.strip().lower() in {"all", "*"}:
+        exec_books = None
+        api_bookmakers = None
+    else:
+        exec_books = [b.strip() for b in books.split(",") if b.strip()]
+        api_bookmakers = ",".join(SHOP_BM_KEYS.get(b.lower(), b.lower()) for b in exec_books)
+
+    events = []
+    source = ""
+    if odds_file is not None:
+        events = load_multi_book_file(odds_file)
+        source = f"file:{odds_file}"
+    elif live:
+        try:
+            raw = fetch_nba_multi_book_odds(bookmakers=api_bookmakers)
+            events = parse_odds_api_multi_book(raw)
+            source = "live:the-odds-api-multibook"
+        except OddsApiConfigError as exc:
+            typer.echo(f"odds source: no-odds:{exc}")
+            raise typer.Exit(code=0) from exc
+    else:
+        cached = latest_multi_book_odds_cache(data_dir)
+        if cached is not None:
+            events = load_multi_book_file(cached)
+            source = f"cache:{cached}"
+        else:
+            try:
+                raw = fetch_nba_multi_book_odds(bookmakers=api_bookmakers)
+                events = parse_odds_api_multi_book(raw)
+                source = "live:the-odds-api-multibook"
+            except OddsApiConfigError as exc:
+                typer.echo(f"odds source: no-odds:{exc}")
+                raise typer.Exit(code=0) from exc
+
+    if game_date:
+        events = [e for e in events if e.game_date == game_date]
+
+    model_probs: dict[str, float] = {}
+    if season and game_date and model_weight > 0.0:
+        try:
+            from nba_betting.slate.score import score_date
+
+            preds = score_date(season=season, game_date=game_date, root=data_dir, n_sims=10_000)
+            for p in preds:
+                model_probs[f"{p.away_tricode}@{p.home_tricode}"] = float(p.p_home_win)
+        except Exception:
+            pass
+
+    mkt_list = [m.strip() for m in markets.split(",") if m.strip()]
+    size_list = [int(s.strip()) for s in sizes.split(",") if s.strip()]
+
+    cons_rows, outlier_rows = analyze_slate_markets(
+        events,
+        devig_method=devig,
+        markets=mkt_list,
+        min_outlier_ev=min_ev,
+    )
+    tickets = route_parlays_across_books(
+        events,
+        devig_method=devig,
+        markets=mkt_list,
+        execution_books=exec_books,
+        model_home_probs=model_probs or None,
+        model_weight=model_weight,
+        sizes=size_list,
+        min_parlay_ev=min_ev,
+        max_per_day=max_per_day,
+        bankroll=bankroll,
+    )
+    typer.echo(format_market_shopping_report(cons_rows, outlier_rows, tickets, source=source))
+    if out is not None:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "source": source,
+            "devig_method": devig,
+            "execution_books": exec_books,
+            "consensus": cons_rows,
+            "stale_outliers": outlier_rows,
+            "routed_parlays": [t.to_dict() for t in tickets],
+        }
+        out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        typer.echo(f"wrote {out_path}")
 
 
 @slate_app.command("build")
@@ -319,9 +474,7 @@ def ledger_lock_cmd(
     """Lock model predictions for a date into the blind ledger (no overwrite)."""
     from nba_betting.slate.ledger import lock_date
 
-    added, path = lock_date(
-        season=season, game_date=game_date, root=data_dir, n_sims=n_sims
-    )
+    added, path = lock_date(season=season, game_date=game_date, root=data_dir, n_sims=n_sims)
     typer.echo(f"locked {added} new game(s) → {path}")
 
 
@@ -372,9 +525,7 @@ def props_edges_cmd(
     odds_file: Optional[Path] = typer.Option(
         None, "--odds-file", help="Prop odds JSON cache (default: latest nba_props_*)"
     ),
-    live: bool = typer.Option(
-        False, "--live", help="Fetch prop odds live (requires ODDS_API_KEY)"
-    ),
+    live: bool = typer.Option(False, "--live", help="Fetch prop odds live (requires ODDS_API_KEY)"),
     min_edge: float = typer.Option(0.0, "--min-edge", help="Min edge to display"),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
 ) -> None:

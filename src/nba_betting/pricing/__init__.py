@@ -1,6 +1,28 @@
-"""De-vig, fair odds, edge, Kelly sizing, parlay EV selector."""
+"""De-vig, sharp consensus, stale-outlier detection, Kelly sizing, parlay EV & routing."""
 
-from nba_betting.pricing.american import american_to_implied, implied_to_american
+from nba_betting.pricing.american import american_to_implied, devig_two_way, implied_to_american
+from nba_betting.pricing.consensus import (
+    BOOK_SHARPNESS_WEIGHTS,
+    ConsensusResult,
+    StaleOutlier,
+    TwoWayQuote,
+    book_sharpness_weight,
+    compute_sharp_consensus,
+    detect_stale_outliers,
+    is_valid_pregame_book,
+    normalize_book_key,
+)
+from nba_betting.pricing.devig import (
+    SUPPORTED_DEVIG_METHODS,
+    compare_devig_methods,
+    devig_american,
+    devig_decimal,
+    devig_probabilities,
+    normalize_devig_method,
+    power_exponent,
+    probit_shift,
+    shin_insider_fraction,
+)
 from nba_betting.pricing.edge import EdgeRow, build_edge_rows, format_edge_table
 from nba_betting.pricing.kelly import kelly_fraction, stake_amount
 from nba_betting.pricing.parlay_ev import (
@@ -17,26 +39,71 @@ from nba_betting.pricing.parlay_ev import (
     summarize_ticket_pnl,
 )
 from nba_betting.pricing.prop_edge import PropEdgeRow, build_prop_edge_rows
+from nba_betting.pricing.shopping import (
+    DEFAULT_ROUTING_BOOKS,
+    BookLine,
+    MultiBookEvent,
+    RoutedParlayLeg,
+    RoutedParlayTicket,
+    analyze_slate_markets,
+    format_market_shopping_report,
+    load_multi_book_file,
+    parse_live_slate_markdown,
+    parse_odds_api_multi_book,
+    route_parlays_across_books,
+    route_single_bets_across_books,
+)
 
 __all__ = [
+    "BOOK_SHARPNESS_WEIGHTS",
+    "BookLine",
+    "ConsensusResult",
+    "DEFAULT_ROUTING_BOOKS",
     "EdgeRow",
+    "MultiBookEvent",
     "PropEdgeRow",
+    "RoutedParlayLeg",
+    "RoutedParlayTicket",
+    "SUPPORTED_DEVIG_METHODS",
+    "StaleOutlier",
+    "TwoWayQuote",
     "american_to_implied",
+    "analyze_slate_markets",
+    "book_sharpness_weight",
     "build_edge_rows",
     "build_eligible_legs",
     "build_prop_edge_rows",
     "clears_parlay_price",
+    "compare_devig_methods",
+    "compute_sharp_consensus",
+    "detect_stale_outliers",
+    "devig_american",
+    "devig_decimal",
+    "devig_probabilities",
+    "devig_two_way",
     "enumerate_parlays",
     "enumerate_same_day_parlays",
     "format_edge_table",
+    "format_market_shopping_report",
     "grade_tickets",
     "implied_to_american",
+    "is_valid_pregame_book",
     "kelly_fraction",
+    "load_multi_book_file",
+    "normalize_book_key",
+    "normalize_devig_method",
     "parlay_decimal",
     "parlay_ev_per_unit",
+    "parse_live_slate_markdown",
+    "parse_odds_api_multi_book",
+    "power_exponent",
+    "probit_shift",
+    "route_parlays_across_books",
+    "route_single_bets_across_books",
     "run_parlay_selector",
     "select_nonoverlapping_tickets",
     "select_top_edge_tickets",
+    "shin_insider_fraction",
     "stake_amount",
     "summarize_ticket_pnl",
 ]
