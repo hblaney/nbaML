@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
+from typing import Union
 
 import pandas as pd
 
 from nba_betting.data.prop_odds import PropOdds
+from nba_betting.models.prop_distribution import DistributionalPropProjection
 from nba_betting.models.props import PropProjection, p_over_poisson
 from nba_betting.pricing.american import devig_two_way, implied_to_american
 
+AnyPropProjection = Union[PropProjection, DistributionalPropProjection]
+
+_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
 
 def _norm_name(name: str) -> str:
-    return " ".join(str(name).lower().replace(".", "").split())
+    tokens = str(name or "").lower().strip().split()
+    cleaned = [re.sub(r"[^a-z]", "", t) for t in tokens if re.sub(r"[^a-z]", "", t)]
+    if cleaned and cleaned[-1] in _SUFFIXES:
+        cleaned = cleaned[:-1]
+    return " ".join(cleaned)
 
 
 @dataclass(frozen=True)
@@ -37,33 +48,40 @@ class PropEdgeRow:
     edge_under: float | None
     book: str
     event_id: str
+    player_id: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def _match_prop(
-    proj: PropProjection, odds: list[PropOdds], *, stat: str
-) -> PropOdds | None:
+def _match_prop(proj: AnyPropProjection, odds: list[PropOdds], *, stat: str) -> PropOdds | None:
     target = _norm_name(proj.player_name)
     for row in odds:
         if row.stat != stat:
             continue
         if _norm_name(row.player_name) == target:
             return row
-    # Loose: last-name match
+    # Loose: last-name match when unambiguous in odds list
     last = target.split()[-1] if target else ""
     if last:
-        for row in odds:
-            if row.stat != stat:
-                continue
-            if last in _norm_name(row.player_name):
-                return row
+        candidates = [
+            row for row in odds if row.stat == stat and last in _norm_name(row.player_name).split()
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            return candidates[0]
     return None
 
 
+def _prob_over_for_projection(proj: AnyPropProjection, stat: str, line: float) -> float:
+    if isinstance(proj, DistributionalPropProjection):
+        return proj.p_over(stat, line)
+    return p_over_poisson(proj.expected(stat), line)
+
+
 def build_prop_edge_rows(
-    projections: list[PropProjection],
+    projections: list[AnyPropProjection],
     odds: list[PropOdds],
 ) -> list[PropEdgeRow]:
     rows: list[PropEdgeRow] = []
@@ -75,13 +93,13 @@ def build_prop_edge_rows(
             if book.over_price is None or book.under_price is None:
                 continue
             exp = proj.expected(stat)
-            p_over = p_over_poisson(exp, book.line)
+            p_over = _prob_over_for_projection(proj, stat, book.line)
             p_under = 1.0 - p_over
             fair_over, fair_under = devig_two_way(book.over_price, book.under_price)
             rows.append(
                 PropEdgeRow(
-                    game_id=proj.game_id,
-                    game_date=proj.game_date,
+                    game_id=str(proj.game_id),
+                    game_date=str(proj.game_date),
                     player_name=proj.player_name,
                     team_abbreviation=proj.team_abbreviation,
                     market=book.market,
@@ -90,9 +108,7 @@ def build_prop_edge_rows(
                     model_exp=float(exp),
                     model_p_over=float(p_over),
                     model_p_under=float(p_under),
-                    fair_over_american=float(
-                        implied_to_american(min(max(p_over, 1e-6), 1 - 1e-6))
-                    ),
+                    fair_over_american=float(implied_to_american(min(max(p_over, 1e-6), 1 - 1e-6))),
                     fair_under_american=float(
                         implied_to_american(min(max(p_under, 1e-6), 1 - 1e-6))
                     ),
@@ -104,6 +120,7 @@ def build_prop_edge_rows(
                     edge_under=float(p_under - fair_under),
                     book=book.book,
                     event_id=book.event_id,
+                    player_id=str(proj.player_id),
                 )
             )
     return rows
@@ -118,8 +135,6 @@ def prop_edges_to_frame(rows: list[PropEdgeRow]) -> pd.DataFrame:
 def format_prop_edge_table(rows: list[PropEdgeRow], *, min_edge: float = 0.0) -> str:
     if not rows:
         return "(no matched prop odds / edges)"
-    df = prop_edges_to_frame(rows)
-    # Expand to one row per side for display.
     records = []
     for r in rows:
         for side, edge, model_p, book_fair, fair_am, book_am in (

@@ -174,9 +174,7 @@ def model_score_cmd(
     data_dir: Optional[Path] = typer.Option(
         None, "--data-dir", help="Override data root (default: ./data)"
     ),
-    spread: float = typer.Option(
-        0.0, "--spread", help="Home market spread (e.g. -3.5); default 0"
-    ),
+    spread: float = typer.Option(0.0, "--spread", help="Home market spread (e.g. -3.5); default 0"),
     total: Optional[float] = typer.Option(
         None, "--total", help="Market total; default model expected total"
     ),
@@ -231,12 +229,8 @@ def slate_edges_cmd(
     odds_file: Optional[Path] = typer.Option(
         None, "--odds-file", help="Odds JSON cache (default: latest under data/raw/odds)"
     ),
-    live: bool = typer.Option(
-        False, "--live", help="Fetch Odds API live (requires ODDS_API_KEY)"
-    ),
-    min_edge: float = typer.Option(
-        0.0, "--min-edge", help="Only show edges >= this (e.g. 0.03)"
-    ),
+    live: bool = typer.Option(False, "--live", help="Fetch Odds API live (requires ODDS_API_KEY)"),
+    min_edge: float = typer.Option(0.0, "--min-edge", help="Only show edges >= this (e.g. 0.03)"),
     n_sims: int = typer.Option(10000, "--n-sims", help="Monte Carlo simulations"),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
 ) -> None:
@@ -319,9 +313,7 @@ def ledger_lock_cmd(
     """Lock model predictions for a date into the blind ledger (no overwrite)."""
     from nba_betting.slate.ledger import lock_date
 
-    added, path = lock_date(
-        season=season, game_date=game_date, root=data_dir, n_sims=n_sims
-    )
+    added, path = lock_date(season=season, game_date=game_date, root=data_dir, n_sims=n_sims)
     typer.echo(f"locked {added} new game(s) → {path}")
 
 
@@ -346,16 +338,27 @@ def props_score_cmd(
     data_dir: Optional[Path] = typer.Option(
         None, "--data-dir", help="Override data root (default: ./data)"
     ),
+    distributional: bool = typer.Option(
+        False,
+        "--distributional",
+        help="Use non-linear teammate redistribution + bimodal blowout NB mixture",
+    ),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
 ) -> None:
     """Project PTS/REB/AST/3PM/PRA for a slate date from cached player logs."""
     from nba_betting.slate.props import (
         format_prop_projections,
+        score_distributional_props_date,
         score_props_date,
         write_prop_projections_json,
     )
 
-    projections = score_props_date(season=season, game_date=game_date, root=data_dir)
+    if distributional:
+        projections = score_distributional_props_date(
+            season=season, game_date=game_date, root=data_dir
+        )
+    else:
+        projections = score_props_date(season=season, game_date=game_date, root=data_dir)
     typer.echo(format_prop_projections(projections))
     if out is not None:
         path = write_prop_projections_json(projections, out)
@@ -372,8 +375,14 @@ def props_edges_cmd(
     odds_file: Optional[Path] = typer.Option(
         None, "--odds-file", help="Prop odds JSON cache (default: latest nba_props_*)"
     ),
-    live: bool = typer.Option(
-        False, "--live", help="Fetch prop odds live (requires ODDS_API_KEY)"
+    live: bool = typer.Option(False, "--live", help="Fetch prop odds live (requires ODDS_API_KEY)"),
+    consensus: bool = typer.Option(
+        False, "--consensus", help="Aggregate multi-book consensus lines & best prices"
+    ),
+    distributional: bool = typer.Option(
+        False,
+        "--distributional",
+        help="Score edges with bimodal blowout NB mixture + teammate redistribution",
     ),
     min_edge: float = typer.Option(0.0, "--min-edge", help="Min edge to display"),
     out: Optional[Path] = typer.Option(None, "--out", help="Optional JSON output path"),
@@ -391,9 +400,59 @@ def props_edges_cmd(
         root=data_dir,
         odds_path=odds_file,
         use_live=live,
+        consensus=consensus,
+        distributional=distributional,
         min_edge=min_edge,
     )
     typer.echo(format_prop_edges_report(rows, source, min_edge=min_edge))
     if out is not None:
         path = write_prop_edges_json(rows, out)
         typer.echo(f"wrote {path}")
+
+
+@props_app.command("parlays")
+def props_parlays_cmd(
+    season: str = typer.Option(..., "--season", help="Season like 2024-25"),
+    game_date: str = typer.Option(..., "--date", help="Game date YYYY-MM-DD"),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Override data root (default: ./data)"
+    ),
+    odds_file: Optional[Path] = typer.Option(
+        None, "--odds-file", help="Prop odds JSON cache (default: latest nba_props_*)"
+    ),
+    live: bool = typer.Option(False, "--live", help="Fetch prop odds live (requires ODDS_API_KEY)"),
+    consensus: bool = typer.Option(
+        True, "--consensus/--single-book", help="Line-shop across books when live"
+    ),
+    min_price_edge: float = typer.Option(
+        0.04, "--min-price-edge", help="Minimum relative edge vs vigged parlay price"
+    ),
+    max_legs: int = typer.Option(
+        2, "--legs", help="Parlay leg count (default 2: frozen OOS winner)"
+    ),
+) -> None:
+    """Select cross-game +EV prop parlays for a slate date."""
+    from nba_betting.slate.props import slate_prop_edges, slate_prop_parlays
+
+    rows, _projs, source = slate_prop_edges(
+        season=season,
+        game_date=game_date,
+        root=data_dir,
+        odds_path=odds_file,
+        use_live=live,
+        consensus=consensus,
+        distributional=True,
+    )
+    if source.startswith("no-odds:"):
+        typer.echo(f"prop odds source: {source}\nNo prop odds available for parlay build.")
+        return
+    tickets = slate_prop_parlays(
+        rows, sizes=(int(max_legs),), min_price_edge=min_price_edge, max_per_day=2
+    )
+    if tickets.empty:
+        typer.echo(
+            f"prop odds source: {source}\n"
+            f"(no 2/3-leg prop parlays clear price edge >= {min_price_edge:.1%})"
+        )
+        return
+    typer.echo(f"prop odds source: {source}\n{tickets.to_string(index=False)}")

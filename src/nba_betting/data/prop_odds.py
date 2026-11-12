@@ -58,6 +58,7 @@ def prop_markets_from_env() -> tuple[str, ...]:
         return DEFAULT_PROP_MARKETS
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
+
 PROP_MARKET_TO_STAT = {
     "player_points": "points",
     "player_rebounds": "rebounds",
@@ -91,15 +92,32 @@ def prop_odds_cache_path(root: Path | None = None, *, asof: str | None = None) -
     return raw_dir(root) / "odds" / f"nba_props_{stamp}.json"
 
 
+def _norm_player_key(name: str) -> str:
+    """Canonical player key tolerant of Jr./Sr./II-V suffixes and punctuation."""
+    import re
+
+    tokens = str(name or "").lower().strip().split()
+    cleaned = [re.sub(r"[^a-z]", "", t) for t in tokens if re.sub(r"[^a-z]", "", t)]
+    if cleaned and cleaned[-1] in {"jr", "sr", "ii", "iii", "iv", "v"}:
+        cleaned = cleaned[:-1]
+    return "".join(cleaned)
+
+
 def parse_prop_markets(
     event_payload: dict[str, Any],
     *,
     asof_ts: str | None = None,
     book_key: str | None = None,
+    consensus: bool = False,
 ) -> list[PropOdds]:
-    """Parse an event odds payload (with ``bookmakers``) into ``PropOdds`` rows."""
-    book = _pick_bookmaker(event_payload, preferred=book_key)
-    if book is None:
+    """Parse an event odds payload (with ``bookmakers``) into ``PropOdds`` rows.
+
+    When ``consensus=False`` (default), uses the preferred/first bookmaker.
+    When ``consensus=True``, aggregates all books in the payload per ``(player, market)``
+    using the modal/median line and best available Over/Under prices on that line.
+    """
+    books = event_payload.get("bookmakers") or []
+    if not books:
         return []
 
     asof = asof_ts or datetime.now(timezone.utc).isoformat()
@@ -107,42 +125,117 @@ def parse_prop_markets(
     away = str(event_payload.get("away_team") or event_payload.get("away") or "")
     event_id = str(event_payload.get("id") or event_payload.get("event_id") or "")
     commence = str(event_payload.get("commence_time") or "")
-    book_name = str(book.get("key") or book.get("title") or "")
 
-    rows: list[PropOdds] = []
-    for market in book.get("markets") or []:
-        mkey = str(market.get("key") or "")
-        if mkey not in PROP_MARKET_TO_STAT:
-            continue
-        by_player: dict[tuple[str, float], dict[str, float]] = {}
-        for outcome in market.get("outcomes") or []:
-            player = str(outcome.get("description") or "").strip()
-            side = str(outcome.get("name") or "").strip().lower()
-            if side not in {"over", "under"}:
+    if not consensus:
+        book = _pick_bookmaker(event_payload, preferred=book_key)
+        if book is None:
+            return []
+        book_name = str(book.get("key") or book.get("title") or "")
+
+        rows: list[PropOdds] = []
+        for market in book.get("markets") or []:
+            mkey = str(market.get("key") or "")
+            if mkey not in PROP_MARKET_TO_STAT:
                 continue
-            if not player:
-                continue
-            point = float(outcome.get("point"))
-            price = float(outcome.get("price"))
-            by_player.setdefault((player, point), {})[side] = price
-        for (player, point), prices in by_player.items():
-            rows.append(
-                PropOdds(
-                    event_id=event_id,
-                    commence_time=commence,
-                    home=home,
-                    away=away,
-                    player_name=player,
-                    market=mkey,
-                    stat=PROP_MARKET_TO_STAT[mkey],
-                    line=float(point),
-                    over_price=prices.get("over"),
-                    under_price=prices.get("under"),
-                    book=book_name,
-                    asof_ts=asof,
+            by_player: dict[tuple[str, float], dict[str, float]] = {}
+            for outcome in market.get("outcomes") or []:
+                player = str(outcome.get("description") or "").strip()
+                side = str(outcome.get("name") or "").strip().lower()
+                if side not in {"over", "under"} or not player:
+                    continue
+                if outcome.get("point") is None or outcome.get("price") is None:
+                    continue
+                point = float(outcome["point"])
+                price = float(outcome["price"])
+                by_player.setdefault((player, point), {})[side] = price
+            for (player, point), prices in by_player.items():
+                rows.append(
+                    PropOdds(
+                        event_id=event_id,
+                        commence_time=commence,
+                        home=home,
+                        away=away,
+                        player_name=player,
+                        market=mkey,
+                        stat=PROP_MARKET_TO_STAT[mkey],
+                        line=float(point),
+                        over_price=prices.get("over"),
+                        under_price=prices.get("under"),
+                        book=book_name,
+                        asof_ts=asof,
+                    )
                 )
+        return rows
+
+    # Multi-book consensus / line-shopping mode across all books in event_payload
+    import numpy as np
+
+    grouped: dict[tuple[str, str], list[tuple[str, float, float | None, float | None, str]]] = {}
+    for bk in books:
+        bk_name = str(bk.get("key") or bk.get("title") or "")
+        for market in bk.get("markets") or []:
+            mkey = str(market.get("key") or "")
+            if mkey not in PROP_MARKET_TO_STAT:
+                continue
+            by_p: dict[tuple[str, float], dict[str, float]] = {}
+            for outcome in market.get("outcomes") or []:
+                player = str(outcome.get("description") or "").strip()
+                side = str(outcome.get("name") or "").strip().lower()
+                if side not in {"over", "under"} or not player:
+                    continue
+                if outcome.get("point") is None or outcome.get("price") is None:
+                    continue
+                by_p.setdefault((player, float(outcome["point"])), {})[side] = float(
+                    outcome["price"]
+                )
+            for (player, point), prices in by_p.items():
+                pkey = _norm_player_key(player)
+                if not pkey:
+                    continue
+                grouped.setdefault((pkey, mkey), []).append(
+                    (player, point, prices.get("over"), prices.get("under"), bk_name)
+                )
+
+    out_rows: list[PropOdds] = []
+    for (_pkey, mkey), entries in grouped.items():
+        display_name = entries[0][0]
+        pts_list = [e[1] for e in entries]
+        # Modal line (ties broken by median proximity)
+        med = float(np.median(pts_list))
+        counts: dict[float, int] = {}
+        for pt in pts_list:
+            counts[pt] = counts.get(pt, 0) + 1
+        target_line = sorted(counts.keys(), key=lambda x: (-counts[x], abs(x - med)))[0]
+        on_line = [e for e in entries if abs(e[1] - target_line) < 1e-6]
+        overs = [(e[2], e[4]) for e in on_line if e[2] is not None]
+        unders = [(e[3], e[4]) for e in on_line if e[3] is not None]
+        # Best American price (highest algebraic American value when signed properly via decimal)
+        from nba_betting.pricing.kelly import american_to_decimal
+
+        best_over = max(overs, key=lambda t: american_to_decimal(t[0])) if overs else (None, "")
+        best_under = max(unders, key=lambda t: american_to_decimal(t[0])) if unders else (None, "")
+        bk_label = (
+            f"consensus({len(on_line)}b:{best_over[1]}/{best_under[1]})"
+            if best_over[1] and best_under[1]
+            else f"consensus({len(on_line)}b)"
+        )
+        out_rows.append(
+            PropOdds(
+                event_id=event_id,
+                commence_time=commence,
+                home=home,
+                away=away,
+                player_name=display_name,
+                market=mkey,
+                stat=PROP_MARKET_TO_STAT[mkey],
+                line=float(target_line),
+                over_price=best_over[0],
+                under_price=best_under[0],
+                book=bk_label,
+                asof_ts=asof,
             )
-    return rows
+        )
+    return out_rows
 
 
 def fetch_event_prop_odds(
@@ -151,6 +244,9 @@ def fetch_event_prop_odds(
     api_key: str | None = None,
     regions: str | None = None,
     markets: Sequence[str] | None = None,
+    bookmakers: Sequence[str] | None = None,
+    book_key: str | None = None,
+    consensus: bool = False,
     http_get: OddsHttpGetter | None = None,
     event_meta: dict[str, Any] | None = None,
 ) -> list[PropOdds]:
@@ -169,6 +265,8 @@ def fetch_event_prop_odds(
         "markets": market_list,
         "oddsFormat": "american",
     }
+    if bookmakers:
+        params["bookmakers"] = ",".join(bookmakers)
     url = f"{ODDS_API_BASE}/sports/{ODDS_SPORT_KEY}/events/{event_id}/odds"
     getter = http_get or _default_http_get
     payload = getter(url, params)
@@ -178,7 +276,12 @@ def fetch_event_prop_odds(
     merged = {**(event_meta or {}), **payload}
     if "id" not in merged:
         merged["id"] = event_id
-    return parse_prop_markets(merged, asof_ts=datetime.now(timezone.utc).isoformat())
+    return parse_prop_markets(
+        merged,
+        asof_ts=datetime.now(timezone.utc).isoformat(),
+        book_key=book_key,
+        consensus=consensus,
+    )
 
 
 def fetch_nba_prop_odds(
@@ -187,6 +290,9 @@ def fetch_nba_prop_odds(
     event_ids: Sequence[str] | None = None,
     http_get: OddsHttpGetter | None = None,
     markets: Sequence[str] | None = None,
+    bookmakers: Sequence[str] | None = None,
+    book_key: str | None = None,
+    consensus: bool = False,
 ) -> list[PropOdds]:
     """Fetch props for featured events (or an explicit event id list)."""
     key = api_key if api_key is not None else get_odds_api_key()
@@ -220,6 +326,9 @@ def fetch_nba_prop_odds(
                     api_key=key,
                     http_get=getter,
                     markets=markets,
+                    bookmakers=bookmakers,
+                    book_key=book_key,
+                    consensus=consensus,
                     event_meta=meta,
                 )
             )
@@ -234,9 +343,20 @@ def pull_prop_odds(
     root: Path | None = None,
     api_key: str | None = None,
     http_get: OddsHttpGetter | None = None,
+    markets: Sequence[str] | None = None,
+    bookmakers: Sequence[str] | None = None,
+    book_key: str | None = None,
+    consensus: bool = False,
 ) -> Path:
     """Fetch prop odds and cache under ``data/raw/odds/nba_props_*.json``."""
-    rows = fetch_nba_prop_odds(api_key=api_key, http_get=http_get)
+    rows = fetch_nba_prop_odds(
+        api_key=api_key,
+        http_get=http_get,
+        markets=markets,
+        bookmakers=bookmakers,
+        book_key=book_key,
+        consensus=consensus,
+    )
     path = prop_odds_cache_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps([r.to_dict() for r in rows], indent=2) + "\n", encoding="utf-8")
