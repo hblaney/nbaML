@@ -478,7 +478,7 @@ def run_parlay_selector(
     min_price_edge: float = 1.0,
     min_ev: float | None = None,
     max_parlay_decimal: float | None = None,
-    sizes: Sequence[int] = (5,),
+    sizes: Sequence[int] = (2,),
     max_per_day: int = 1,
     walkforward_quantile: float | None = None,
     allow_same_game: bool = True,
@@ -487,11 +487,9 @@ def run_parlay_selector(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Legs → tickets that beat parlay payout price → top-edge pick → graded summary.
 
-    Defaults match the holdout-winning freeze from the 2022-24 train sweep
-    (best ``min_price_edge`` per leg count on train, then pick leg count by
-    2025-26 holdout ROI): 5-leg, ``min_price_edge=1.0``, vigged leg filter,
-    no decimal cap, 1 ticket/day. Train for this rule was negative — see
-    ``nba-parlay-ev.md``.
+    Defaults = 2-leg freeze from the 2022-24 train sweep (best edge for
+    2-leg: ``min_price_edge=1.0``). Only length positive on train, confirm,
+    and holdout. Longer legs kept out of defaults — see ``nba-parlay-ev.md``.
     """
     legs = build_eligible_legs(
         games,
