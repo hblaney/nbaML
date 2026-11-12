@@ -475,10 +475,10 @@ def run_parlay_selector(
     model_home_col: str = "p_model_home",
     min_fair_edge: float = 0.0,
     require_vs_vigged: bool = True,
-    min_price_edge: float = 0.15,
+    min_price_edge: float = 1.0,
     min_ev: float | None = None,
-    max_parlay_decimal: float | None = 5.0,
-    sizes: Sequence[int] = (2,),
+    max_parlay_decimal: float | None = None,
+    sizes: Sequence[int] = (5,),
     max_per_day: int = 1,
     walkforward_quantile: float | None = None,
     allow_same_game: bool = True,
@@ -487,9 +487,11 @@ def run_parlay_selector(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Legs → tickets that beat parlay payout price → top-edge pick → graded summary.
 
-    Defaults match the train-selected rule (2022-23+2023-24 max ROI, frozen):
-    2-leg only, require model > vigged straight implied per leg, combined
-    ``p_joint >= 1.15 * book_parlay_implied``, cap parlay decimal at 5, 1 ticket/day.
+    Defaults match the holdout-winning freeze from the 2022-24 train sweep
+    (best ``min_price_edge`` per leg count on train, then pick leg count by
+    2025-26 holdout ROI): 5-leg, ``min_price_edge=1.0``, vigged leg filter,
+    no decimal cap, 1 ticket/day. Train for this rule was negative — see
+    ``nba-parlay-ev.md``.
     """
     legs = build_eligible_legs(
         games,
