@@ -38,15 +38,16 @@ export async function launchCloudAgent(params: {
   startingRef?: string;
 }): Promise<CloudLaunchResult> {
   if (!hasCursorApiKey()) {
-    return { ok: false, error: "CURSOR_API_KEY not bound yet" };
+    return { ok: false, error: "FLEET_AGENT_API_KEY not bound yet" };
   }
+  // Cloud Agents API v1: only documented fields — do not send legacy `mode`.
   const body: Record<string, unknown> = {
-    name: params.name.slice(0, 120),
+    name: params.name.slice(0, 100),
     prompt: { text: params.promptText.slice(0, 12000) },
-    mode: "agent",
+    autoCreatePR: true,
   };
   const trimmedRepo = params.repoUrl?.trim() ?? "";
-  if (trimmedRepo.startsWith("https://github.com/")) {
+  if (trimmedRepo.startsWith("https://")) {
     body.repos = [
       {
         url: trimmedRepo,
@@ -59,22 +60,41 @@ export async function launchCloudAgent(params: {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(30000),
     });
-    if (!resp.ok) {
-      return { ok: false, error: `Cursor API HTTP ${resp.status}` };
-    }
-    const data = (await resp.json()) as {
+    const rawText = await resp.text();
+    let data: {
       agent?: { id?: string; status?: string; url?: string };
-    };
+      id?: string;
+      error?: string;
+      message?: string;
+    } = {};
+    try {
+      data = JSON.parse(rawText) as typeof data;
+    } catch {
+      /* non-JSON body */
+    }
+    if (!resp.ok) {
+      const detail =
+        data.error ||
+        data.message ||
+        (rawText ? rawText.slice(0, 240) : "") ||
+        `HTTP ${resp.status}`;
+      return { ok: false, error: `Cursor API ${resp.status}: ${detail}` };
+    }
+    const agentId = data.agent?.id ?? data.id ?? "";
+    if (!agentId) {
+      return { ok: false, error: "Cursor API returned no agent id" };
+    }
     return {
       ok: true,
-      agentId: data.agent?.id ?? "",
+      agentId,
       status: data.agent?.status?.toLowerCase() ?? "active",
       url: data.agent?.url ?? "",
     };
-  } catch {
-    return { ok: false, error: "Cursor Cloud API request failed" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "request failed";
+    return { ok: false, error: `Cursor Cloud API request failed (${msg})` };
   }
 }
 

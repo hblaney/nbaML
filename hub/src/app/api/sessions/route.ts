@@ -70,7 +70,7 @@ export async function POST(request: Request) {
         {
           error:
             detail.includes("not bound") || detail.includes("API_KEY")
-              ? "Add FLEET_AGENT_API_KEY in the secure Secrets form, then try Launch again."
+              ? "To reach Cursor Cloud Agents, add FLEET_AGENT_API_KEY in the secure Secrets form (create a key at Cursor Dashboard → API Keys), then try Launch again."
               : `Cloud launch failed: ${detail}`,
         },
         502,
