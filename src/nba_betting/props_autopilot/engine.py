@@ -18,6 +18,7 @@ from scipy.optimize import brentq
 from scipy.stats import nbinom
 
 from nba_betting.props_autopilot.prizepicks_math import (
+    apply_low_minute_over_calibration,
     apply_stat_tail_calibration,
     settle_prizepicks_slip,
     slip_ev_and_log_growth,
@@ -377,10 +378,16 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
             side = "MORE" if pm_c >= pl_c else "LESS"
             p_dk_cond = max(pm_c, pl_c)
 
-            # Blowout Q4 truncation adjustment + Cycle #1 promoted stat-type Empirical-Bayes calibration
+            # Blowout Q4 truncation + RD-001 stat-tail + RD-009 low-minute OVER calibration
             abs_s = tinfo["abs_spread"]
             blow_bonus = 0.010 if (side == "LESS" and abs_s >= 9.0) else 0.0
             p_cal = apply_stat_tail_calibration(p_dk_cond + blow_bonus, str(r.stat_type))
+            p_cal = apply_low_minute_over_calibration(
+                p_cal,
+                str(r.stat_type),
+                side=side,  # type: ignore[arg-type]
+                pp_line=float(pp_line),
+            )
             inj_tag = inj_map.get(r.cname, "Healthy")
 
             scored_plays.append(
@@ -474,7 +481,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         "prizepicks_standard_props_live": int(len(pp_df)),
         "upcoming_games_scanned": int(len(gm_df)),
         "matched_two_way_props": int(len(sc_df)),
-        "active_model_version": "v2.1-stat-bayes-blowout",
+        "active_model_version": "v2.2-lowmin-over",
         "promoted_rd_upgrades": [
             {
                 "id": "RD-001",

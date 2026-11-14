@@ -53,6 +53,47 @@ def apply_stat_tail_calibration(prob_win: float, stat_type: str) -> float:
     return float(np.clip(float(prob_win) + adj, 0.05, 0.72))
 
 
+# Promoted RD-009 (2022-24 train only): relative EB residual for OVER tails when
+# exp_minutes < 22 vs base. Cleared ESPN+OddsAPI Confirm 2024-25 and Holdout 2025-26.
+LOW_MINUTE_OVER_CUTOFF = 22.0
+LOW_MINUTE_OVER_ADJ_22_24: dict[str, float] = {
+    "points": +0.04939,
+    "Points": +0.04939,
+    "rebounds": +0.00529,
+    "Rebounds": +0.00529,
+    "assists": -0.02712,
+    "Assists": -0.02712,
+    "threes": -0.00143,
+    "3-PT Made": -0.00143,
+}
+# Live board proxy when projected minutes are unavailable: Points MORE with a
+# very low posted line is treated as the low-minute / spot-role archetype.
+LOW_MINUTE_POINTS_LINE_PROXY = 9.0
+
+
+def apply_low_minute_over_calibration(
+    prob_win: float,
+    stat_type: str,
+    *,
+    side: Literal["MORE", "LESS", "over", "under"],
+    exp_minutes: float | None = None,
+    pp_line: float | None = None,
+) -> float:
+    """Adjust OVER/MORE probabilities for low-minute / spot-role archetypes (RD-009)."""
+    side_l = side.lower()
+    if side_l not in {"more", "over"}:
+        return float(np.clip(float(prob_win), 0.05, 0.72))
+    low = False
+    if exp_minutes is not None and np.isfinite(exp_minutes):
+        low = float(exp_minutes) < LOW_MINUTE_OVER_CUTOFF
+    elif pp_line is not None and np.isfinite(pp_line) and stat_type in {"Points", "points"}:
+        low = float(pp_line) < LOW_MINUTE_POINTS_LINE_PROXY
+    if not low:
+        return float(np.clip(float(prob_win), 0.05, 0.72))
+    adj = LOW_MINUTE_OVER_ADJ_22_24.get(stat_type, 0.0)
+    return float(np.clip(float(prob_win) + adj, 0.05, 0.72))
+
+
 def exact_hits_pmf(probs: Sequence[float]) -> np.ndarray:
     """Exact Poisson-Binomial hit count distribution for heterogeneous independent legs."""
     dp = np.array([1.0], dtype=float)
