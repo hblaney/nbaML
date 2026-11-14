@@ -25,7 +25,11 @@ async function getOrCreateTopic(ownerKey: string): Promise<string> {
      on conflict (owner_key) do nothing`,
     [ownerKey, generated],
   );
-  return generated;
+  const again = await sql<{ ntfy_topic: string }>(
+    "select ntfy_topic from fleet_alert_settings where owner_key = $1 limit 1",
+    [ownerKey],
+  );
+  return again[0]?.ntfy_topic ?? generated;
 }
 
 export async function POST(request: Request) {
@@ -81,9 +85,18 @@ export async function POST(request: Request) {
       ok: resp.ok,
       ntfyTopic: topic,
       status: resp.ok ? "sent" : `http_${resp.status}`,
+      error: resp.ok ? undefined : `ntfy returned HTTP ${resp.status}`,
     });
-  } catch {
-    return jsonNoStore({ ok: false, status: "network_error" }, 502);
+  } catch (err) {
+    return jsonNoStore(
+      {
+        ok: false,
+        ntfyTopic: topic,
+        status: "network_error",
+        error: err instanceof Error ? err.message : "network_error",
+      },
+      502,
+    );
   }
 }
 

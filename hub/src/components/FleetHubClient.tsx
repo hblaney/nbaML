@@ -927,14 +927,49 @@ export default function FleetHubClient() {
                     type="button"
                     onClick={async () => {
                       setPingNote("Sending...");
-                      const r = await fetch("/api/autopsies", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({}),
-                      });
-                      const j = (await r.json()) as { ok?: boolean; status?: string };
-                      setPingNote(j.ok ? "Sent to iPhone!" : j.status ?? "Error");
-                      setTimeout(() => setPingNote(""), 3500);
+                      try {
+                        let topic = autopsyData?.ntfyTopic?.trim() ?? "";
+                        if (!topic) {
+                          const boot = await fetch("/api/autopsies", { cache: "no-store" });
+                          const bootJson = (await boot.json().catch(() => null)) as {
+                            ntfyTopic?: string;
+                            error?: string;
+                          } | null;
+                          if (!boot.ok || !bootJson?.ntfyTopic) {
+                            setPingNote(bootJson?.error ?? `load_failed_${boot.status}`);
+                            setTimeout(() => setPingNote(""), 4500);
+                            return;
+                          }
+                          topic = bootJson.ntfyTopic;
+                          setAutopsyData((prev) =>
+                            prev
+                              ? { ...prev, ntfyTopic: topic }
+                              : {
+                                  configured: true,
+                                  ntfyTopic: topic,
+                                  channels: ["ntfy_push"],
+                                  recentAutopsies: [],
+                                },
+                          );
+                        }
+                        // Publish straight from the browser so the push works even when
+                        // the hosted app's server egress to ntfy.sh is blocked.
+                        const resp = await fetch(
+                          `https://ntfy.sh/${encodeURIComponent(topic)}`,
+                          {
+                            method: "POST",
+                            headers: {
+                              Title: "NBA Props 24/7 Autopilot",
+                              Priority: "high",
+                            },
+                            body: "Connected! Every promoted R&D upgrade, 1-a-day PrizePicks card, and post-close slip autopsy will buzz your iPhone here.",
+                          },
+                        );
+                        setPingNote(resp.ok ? "Sent to iPhone!" : `http_${resp.status}`);
+                      } catch (err) {
+                        setPingNote(err instanceof Error ? err.message : "network_error");
+                      }
+                      setTimeout(() => setPingNote(""), 4500);
                     }}
                     className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-indigo-500"
                   >

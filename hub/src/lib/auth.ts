@@ -39,15 +39,28 @@ export async function authorizeRequest(
       return jsonNoStore({ error: "Expected application/json body" }, 415);
     }
     const origin = request.headers.get("origin");
-    const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-    if (origin && host) {
+    if (origin) {
       let originHost = "";
       try {
-        originHost = new URL(origin).host;
+        originHost = new URL(origin).host.toLowerCase();
       } catch {
         return jsonNoStore({ error: "Invalid Origin header" }, 403);
       }
-      if (originHost !== host) {
+      const candidates = [
+        request.headers.get("x-forwarded-host"),
+        request.headers.get("host"),
+        (() => {
+          try {
+            return new URL(request.url).host;
+          } catch {
+            return null;
+          }
+        })(),
+      ]
+        .flatMap((value) => (value ?? "").split(","))
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+      if (candidates.length > 0 && !candidates.includes(originHost)) {
         return jsonNoStore({ error: "Cross-origin state mutation refused" }, 403);
       }
     }
