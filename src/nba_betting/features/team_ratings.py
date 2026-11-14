@@ -10,6 +10,7 @@ import pandas as pd
 from nba_betting.features.possessions import attach_opponent_points, estimate_possessions
 
 DEFAULT_WINDOW = 20  # trailing games used when available
+DEFAULT_EMA_HALF_LIFE = 16.0  # game-count half-life for exponential ratings
 HOME_COURT_POINTS = 2.5  # prior; used by the game model, documented here
 
 
@@ -72,6 +73,42 @@ def team_rating_asof(
         pace=float(hist["pace"].mean()),
         ortg=float(hist["ortg"].mean()),
         drtg=float(hist["drtg"].mean()),
+        asof_date=str(asof.date()),
+    )
+
+
+def team_rating_ema(
+    prepared: pd.DataFrame,
+    team_id: int,
+    asof_date: str | pd.Timestamp,
+    *,
+    half_life: float = DEFAULT_EMA_HALF_LIFE,
+    max_games: int = 82,
+) -> TeamRating | None:
+    """Exponentially weighted season-to-date ratings (``game_date < asof_date`` only).
+
+    More recent games get higher weight. ``half_life`` is in games (weight halves
+    every ``half_life`` steps back from the most recent prior game).
+    """
+    asof = pd.Timestamp(asof_date).normalize()
+    hist = prepared.loc[
+        (prepared["team_id"] == team_id) & (prepared["game_date"] < asof)
+    ]
+    if hist.empty:
+        return None
+    hist = hist.tail(int(max_games))
+    n = len(hist)
+    ages = np.arange(n - 1, -1, -1, dtype=float)  # 0 = most recent
+    weights = 0.5 ** (ages / float(half_life))
+    weights = weights / weights.sum()
+    abbr = str(hist.iloc[-1]["team_abbreviation"])
+    return TeamRating(
+        team_id=int(team_id),
+        team_abbreviation=abbr,
+        games=int(n),
+        pace=float(np.average(hist["pace"].to_numpy(dtype=float), weights=weights)),
+        ortg=float(np.average(hist["ortg"].to_numpy(dtype=float), weights=weights)),
+        drtg=float(np.average(hist["drtg"].to_numpy(dtype=float), weights=weights)),
         asof_date=str(asof.date()),
     )
 

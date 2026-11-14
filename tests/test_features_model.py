@@ -13,6 +13,7 @@ from nba_betting.features.team_ratings import (
     days_rest_asof,
     prepare_team_game_rows,
     team_rating_asof,
+    team_rating_ema,
 )
 from nba_betting.models.game import expected_scores, predict_game, simulate_scores
 from nba_betting.slate.score import format_predictions_table, score_date
@@ -94,6 +95,18 @@ def test_b2b_detection(team_logs: pd.DataFrame) -> None:
     days, is_b2b = days_rest_asof(prepared, 1610612747, "2024-10-25")
     assert days == 1.0
     assert is_b2b is True
+
+
+def test_ema_ratings_exclude_same_day(team_logs: pd.DataFrame) -> None:
+    prepared = prepare_team_game_rows(team_logs)
+    rating = team_rating_ema(prepared, 1610612747, "2024-10-25", half_life=16.0)
+    assert rating is not None
+    assert rating.games == 2
+    hist = prepared.loc[
+        (prepared["team_id"] == 1610612747)
+        & (prepared["game_date"] < pd.Timestamp("2024-10-25"))
+    ]
+    assert len(hist) == rating.games
 
 
 def test_expected_scores_home_court_and_predict(

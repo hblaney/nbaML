@@ -7,11 +7,13 @@ from dataclasses import asdict, dataclass
 import pandas as pd
 
 from nba_betting.features.team_ratings import (
+    DEFAULT_EMA_HALF_LIFE,
     DEFAULT_WINDOW,
     HOME_COURT_POINTS,
     days_rest_asof,
     prepare_team_game_rows,
     team_rating_asof,
+    team_rating_ema,
 )
 
 
@@ -65,10 +67,13 @@ def build_game_features_for_date(
     window: int = DEFAULT_WINDOW,
     home_court_points: float = HOME_COURT_POINTS,
     min_games: int = 1,
+    rating_mode: str = "ema",
+    ema_half_life: float = DEFAULT_EMA_HALF_LIFE,
 ) -> list[GameFeatures]:
     """Build feature rows for all scheduled games on ``game_date``.
 
     Ratings / rest use only team games with ``game_date < slate date``.
+    ``rating_mode`` is ``\"ema\"`` (default) or ``\"window\"`` (flat trailing mean).
     """
     prepared = prepare_team_game_rows(team_logs)
     day = _schedule_for_date(schedule, game_date)
@@ -77,8 +82,18 @@ def build_game_features_for_date(
     for _, row in day.iterrows():
         home_id = int(row["home_team_id"])
         away_id = int(row["away_team_id"])
-        home_r = team_rating_asof(prepared, home_id, game_date, window=window)
-        away_r = team_rating_asof(prepared, away_id, game_date, window=window)
+        if rating_mode == "ema":
+            home_r = team_rating_ema(
+                prepared, home_id, game_date, half_life=ema_half_life
+            )
+            away_r = team_rating_ema(
+                prepared, away_id, game_date, half_life=ema_half_life
+            )
+        elif rating_mode == "window":
+            home_r = team_rating_asof(prepared, home_id, game_date, window=window)
+            away_r = team_rating_asof(prepared, away_id, game_date, window=window)
+        else:
+            raise ValueError(f"unknown rating_mode: {rating_mode!r}")
         if home_r is None or away_r is None:
             continue
         if home_r.games < min_games or away_r.games < min_games:
