@@ -46,7 +46,16 @@ export async function POST(request: Request) {
   let cloudAgentId = "";
   let cloudLaunchNote = "";
 
-  if (kind === "cloud" && initialPrompt) {
+  if (kind === "cloud") {
+    if (!initialPrompt) {
+      return jsonNoStore(
+        {
+          error:
+            "Cloud Agent launches need an opening task. Type what you want Cursor to do, then tap Launch.",
+        },
+        400,
+      );
+    }
     const launched = await launchCloudAgent({
       name: title,
       promptText: initialPrompt,
@@ -56,7 +65,16 @@ export async function POST(request: Request) {
     if (launched.ok && launched.agentId) {
       cloudAgentId = launched.agentId;
     } else {
-      cloudLaunchNote = launched.error ?? "Cloud API unavailable";
+      const detail = launched.error ?? "Cloud API unavailable";
+      return jsonNoStore(
+        {
+          error:
+            detail.includes("not bound") || detail.includes("API_KEY")
+              ? "Add FLEET_AGENT_API_KEY in the secure Secrets form, then try Launch again."
+              : `Cloud launch failed: ${detail}`,
+        },
+        502,
+      );
     }
   }
 

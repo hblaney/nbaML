@@ -103,15 +103,16 @@ export default function FleetHubClient() {
   const [searchResults, setSearchResults] = useState<MessageItem[]>([]);
   const [searching, setSearching] = useState(false);
 
-  // Spawn modal state
+  // Spawn modal state — default Cloud so phone launches work with Mac closed
   const [showSpawn, setShowSpawn] = useState(false);
   const [spawnTitle, setSpawnTitle] = useState("");
-  const [spawnKind, setSpawnKind] = useState<"tmux" | "cloud">("tmux");
+  const [spawnKind, setSpawnKind] = useState<"tmux" | "cloud">("cloud");
   const [spawnWorkdir, setSpawnWorkdir] = useState("/workspace");
   const [spawnBranch, setSpawnBranch] = useState("");
   const [spawnRepo, setSpawnRepo] = useState("https://github.com/hblaney/nbaML");
   const [spawnPrompt, setSpawnPrompt] = useState("");
   const [spawning, setSpawning] = useState(false);
+  const [spawnError, setSpawnError] = useState("");
   const [repoList, setRepoList] = useState<Array<{ name: string; url: string }>>([]);
   const [autopsyData, setAutopsyData] = useState<{
     configured: boolean;
@@ -315,6 +316,17 @@ export default function FleetHubClient() {
   const handleSpawn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!spawnTitle.trim() || spawning) return;
+    setSpawnError("");
+    if (spawnKind === "cloud" && !spawnPrompt.trim()) {
+      setSpawnError("Add an opening task so the Cloud Agent knows what to do.");
+      return;
+    }
+    if (spawnKind === "cloud" && data && !data.runtime.cloudApiConfigured) {
+      setSpawnError(
+        "Cloud launches need FLEET_AGENT_API_KEY. Add it in the secure Secrets form, then retry.",
+      );
+      return;
+    }
     setSpawning(true);
     try {
       const resp = await fetch("/api/sessions", {
@@ -329,17 +341,30 @@ export default function FleetHubClient() {
           initialPrompt: spawnPrompt.trim(),
         }),
       });
-      if (resp.ok) {
-        const created = (await resp.json()) as { session: SessionItem };
-        setShowSpawn(false);
-        setSpawnTitle("");
-        setSpawnPrompt("");
-        await refresh();
-        if (created.session?.id) {
-          setSelectedId(created.session.id);
-          setMobileTab("chat");
-        }
+      const payload = (await resp.json().catch(() => null)) as {
+        session?: SessionItem;
+        error?: string;
+        cloudLaunchNote?: string;
+      } | null;
+      if (!resp.ok || !payload?.session) {
+        setSpawnError(
+          payload?.error ??
+            payload?.cloudLaunchNote ??
+            `Launch failed (HTTP ${resp.status}). Try Cloud Agent with an opening task.`,
+        );
+        return;
       }
+      setShowSpawn(false);
+      setSpawnTitle("");
+      setSpawnPrompt("");
+      setSpawnError("");
+      await refresh();
+      if (payload.session.id) {
+        setSelectedId(payload.session.id);
+        setMobileTab("chat");
+      }
+    } catch (err) {
+      setSpawnError(err instanceof Error ? err.message : "Network error launching session");
     } finally {
       setSpawning(false);
     }
@@ -432,7 +457,11 @@ export default function FleetHubClient() {
           </button>
           <button
             type="button"
-            onClick={() => setShowSpawn(true)}
+            onClick={() => {
+              setSpawnError("");
+              setSpawnKind("cloud");
+              setShowSpawn(true);
+            }}
             className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-500"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -1239,28 +1268,30 @@ export default function FleetHubClient() {
               Spawn New Cursor Session
             </h3>
             <p className="mt-1 text-xs text-zinc-400">
-              Start a local tmux Cursor CLI worker or launch a Cursor Cloud Agent.
+              From your phone, use <b>Cloud Agent</b> (Mac can stay closed). Local tmux only
+              works when your Mac bridge daemon is running.
             </p>
+            {spawnError ? (
+              <p className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-200">
+                {spawnError}
+              </p>
+            ) : null}
+            {spawnKind === "cloud" && data && !data.runtime.cloudApiConfigured ? (
+              <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-100">
+                To reach Cursor Cloud Agents, the app needs one value. Add it in the secure
+                form. If you don&apos;t have it, ask your team admin. The app switches to real
+                launches once it&apos;s added.
+              </p>
+            ) : null}
 
             <div className="mt-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setSpawnKind("tmux")}
-                  className={`rounded-xl border p-2.5 text-left text-xs ${
-                    spawnKind === "tmux"
-                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
-                      : "border-zinc-800 bg-zinc-900 text-zinc-400"
-                  }`}
-                >
-                  <div className="font-semibold">Local tmux CLI</div>
-                  <div className="mt-0.5 text-[10px] opacity-80">
-                    Spawns `agent` in tmux
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSpawnKind("cloud")}
+                  onClick={() => {
+                    setSpawnKind("cloud");
+                    setSpawnError("");
+                  }}
                   className={`rounded-xl border p-2.5 text-left text-xs ${
                     spawnKind === "cloud"
                       ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-200"
@@ -1269,7 +1300,24 @@ export default function FleetHubClient() {
                 >
                   <div className="font-semibold">Cloud Agent</div>
                   <div className="mt-0.5 text-[10px] opacity-80">
-                    Cursor /v1/agents VM
+                    Phone-friendly · Mac can be closed
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSpawnKind("tmux");
+                    setSpawnError("");
+                  }}
+                  className={`rounded-xl border p-2.5 text-left text-xs ${
+                    spawnKind === "tmux"
+                      ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
+                      : "border-zinc-800 bg-zinc-900 text-zinc-400"
+                  }`}
+                >
+                  <div className="font-semibold">Local tmux CLI</div>
+                  <div className="mt-0.5 text-[10px] opacity-80">
+                    Needs Mac bridge online
                   </div>
                 </button>
               </div>
@@ -1339,12 +1387,15 @@ export default function FleetHubClient() {
               )}
 
               <div>
-                <label className="block text-xs text-zinc-400">Opening Task (Pushed Immediately)</label>
+                <label className="block text-xs text-zinc-400">
+                  Opening Task {spawnKind === "cloud" ? "(required)" : "(optional)"}
+                </label>
                 <textarea
                   rows={3}
+                  required={spawnKind === "cloud"}
                   value={spawnPrompt}
                   onChange={(e) => setSpawnPrompt(e.target.value)}
-                  placeholder="Check tonight's PrizePicks lines against DraftKings and message @coordinator..."
+                  placeholder="e.g. Scan tonight's PrizePicks board and text me the 1-a-day slip"
                   className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
@@ -1353,14 +1404,21 @@ export default function FleetHubClient() {
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setShowSpawn(false)}
+                onClick={() => {
+                  setShowSpawn(false);
+                  setSpawnError("");
+                }}
                 className="rounded-xl border border-zinc-800 px-4 py-2 text-xs text-zinc-300 hover:bg-zinc-900"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                disabled={spawning || !spawnTitle.trim()}
+                disabled={
+                  spawning ||
+                  !spawnTitle.trim() ||
+                  (spawnKind === "cloud" && !spawnPrompt.trim())
+                }
                 className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
               >
                 {spawning ? "Spawning..." : "Launch Session"}
