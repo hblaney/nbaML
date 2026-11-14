@@ -107,15 +107,33 @@ def run_walkforward(
     paper_american: float = -110.0,
     calibrate: bool = True,
     rating_mode: str = "ema",
+    player_minutes: Any = None,
+    adj_blend: float = 0.0,
+    avail_points_per_missing_min: float = 0.0,
+    sched_three_in_four_penalty: float = 0.0,
+    sched_games7_penalty: float = 0.0,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Walk forward over schedule dates; features use only prior games.
 
     When ``calibrate`` is True, moneyline probabilities are Platt-calibrated with
     an expanding window (fit only on earlier games in this run).
     """
+    from nba_betting.features.player_availability import prepare_player_minutes
+    from nba_betting.features.team_ratings import prepare_team_game_rows
+
     sched = schedule if schedule is not None else load_schedule(season, root=root)
     logs = team_logs if team_logs is not None else load_boxscores(season, level="team", root=root)
     actuals = _actuals_from_schedule(sched)
+    prepared = prepare_team_game_rows(logs)
+    pm_prep = None
+    if player_minutes is not None:
+        if isinstance(player_minutes, dict):
+            pm_prep = player_minutes
+        else:
+            pm_all = prepare_player_minutes(player_minutes)
+            pm_prep = {
+                int(tid): g.reset_index(drop=True) for tid, g in pm_all.groupby("team_id")
+            }
 
     dates = _schedule_dates(sched)
     if start_date:
@@ -132,9 +150,19 @@ def run_walkforward(
             season=season,
             min_games=min_games,
             rating_mode=rating_mode,
+            player_minutes_prepared=pm_prep,
+            adj_blend=float(adj_blend),
+            prepared_logs=prepared,
         )
         for j, feat in enumerate(feats):
-            pred = predict_game(feat, n_sims=n_sims, seed=10_000 + i * 100 + j)
+            pred = predict_game(
+                feat,
+                n_sims=n_sims,
+                seed=10_000 + i * 100 + j,
+                avail_points_per_missing_min=float(avail_points_per_missing_min),
+                sched_three_in_four_penalty=float(sched_three_in_four_penalty),
+                sched_games7_penalty=float(sched_games7_penalty),
+            )
             row = pred.to_dict()
             act = actuals.loc[actuals["game_id"] == pred.game_id]
             if act.empty:
@@ -171,6 +199,8 @@ def run_walkforward(
     metrics["season"] = season
     metrics["calibrate"] = bool(calibrate)
     metrics["rating_mode"] = rating_mode
+    metrics["adj_blend"] = float(adj_blend)
+    metrics["avail_points_per_missing_min"] = float(avail_points_per_missing_min)
     return graded, metrics
 
 
