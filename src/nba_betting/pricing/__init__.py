@@ -1,8 +1,39 @@
-"""De-vig, fair odds, edge, Kelly sizing."""
+"""De-vig, fair odds, edge, Kelly sizing, parlay EV selector."""
 
 from nba_betting.pricing.american import american_to_implied, implied_to_american
 from nba_betting.pricing.edge import EdgeRow, build_edge_rows, format_edge_table
 from nba_betting.pricing.kelly import kelly_fraction, stake_amount
+from nba_betting.pricing.kelly_portfolio import (
+    build_extra_spread_total_legs,
+    build_prop_candidate_legs,
+    build_shrunk_legs,
+    compute_shin_clv_bps,
+    debiased_hubacek_probs,
+    enumerate_kelly_candidates,
+    fit_oos_shrinkage,
+    run_kelly_compounding_selector,
+    run_unified_kelly_portfolio,
+    select_daily_kelly_portfolio,
+    shrink_probs,
+    simulate_seasonal_kelly,
+    single_ticket_expected_log_growth,
+    single_ticket_kelly_fraction,
+    solve_daily_joint_kelly,
+    winsorize_prob_by_ev_cap,
+)
+from nba_betting.pricing.parlay_ev import (
+    build_eligible_legs,
+    clears_parlay_price,
+    enumerate_parlays,
+    enumerate_same_day_parlays,
+    grade_tickets,
+    parlay_decimal,
+    parlay_ev_per_unit,
+    run_parlay_selector,
+    select_nonoverlapping_tickets,
+    select_top_edge_tickets,
+    summarize_ticket_pnl,
+)
 from nba_betting.pricing.prop_edge import PropEdgeRow, build_prop_edge_rows
 
 __all__ = [
@@ -10,9 +41,36 @@ __all__ = [
     "PropEdgeRow",
     "american_to_implied",
     "build_edge_rows",
+    "build_eligible_legs",
+    "build_extra_spread_total_legs",
+    "build_prop_candidate_legs",
     "build_prop_edge_rows",
+    "build_shrunk_legs",
+    "clears_parlay_price",
+    "compute_shin_clv_bps",
+    "debiased_hubacek_probs",
+    "enumerate_kelly_candidates",
+    "enumerate_parlays",
+    "enumerate_same_day_parlays",
+    "fit_oos_shrinkage",
     "format_edge_table",
+    "grade_tickets",
     "implied_to_american",
     "kelly_fraction",
+    "parlay_decimal",
+    "parlay_ev_per_unit",
+    "run_kelly_compounding_selector",
+    "run_parlay_selector",
+    "run_unified_kelly_portfolio",
+    "select_daily_kelly_portfolio",
+    "select_nonoverlapping_tickets",
+    "select_top_edge_tickets",
+    "shrink_probs",
+    "simulate_seasonal_kelly",
+    "single_ticket_expected_log_growth",
+    "single_ticket_kelly_fraction",
+    "solve_daily_joint_kelly",
     "stake_amount",
+    "summarize_ticket_pnl",
+    "winsorize_prob_by_ev_cap",
 ]
