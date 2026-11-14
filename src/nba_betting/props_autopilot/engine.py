@@ -475,22 +475,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         "upcoming_games_scanned": int(len(gm_df)),
         "matched_two_way_props": int(len(sc_df)),
         "active_model_version": "v2.1-stat-bayes-blowout",
-        "promoted_rd_upgrades": [
-            {
-                "id": "RD-001",
-                "title": "Empirical-Bayes Stat-Type Tail Calibration (2022-24 Fit)",
-                "finding": "Assists (+1.36%) & Rebounds (+0.17%) outperform raw model/book probability in OOS tails while Points (-0.51%) & 3PM (-0.25%) carry shooting-variance drag.",
-                "oos_lift": "Flipped 2024-25 5-Flex ROI from -8.5% -> +16.4% (ESPN) and -46.7% -> +60.0% (OddsAPI); +176.9% 5-Flex ROI on 2025-26 OddsAPI holdout.",
-                "status": "PROMOTED",
-            },
-            {
-                "id": "RD-002",
-                "title": "Unbounded 6-Feature Matchup Logit Residual",
-                "finding": "Improved Confirm 2024-25 3-Power (+31.7%) but degraded OddsAPI 2024-26 (-5.6%) due to colinearity with market line.",
-                "oos_lift": "Rejected by dual-holdout gate (zero overfit promotions).",
-                "status": "REJECTED",
-            },
-        ],
+        "promoted_rd_upgrades": load_rd_log(state_dir),
         "recommended_slip": recommended_slip,
         "top_edges": top_edges,
         "graded_players_by_date": graded_recent,
@@ -498,3 +483,59 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
 
     (state_dir / "latest_status.json").write_text(json.dumps(status_payload, indent=2))
     return status_payload
+
+
+DEFAULT_RD_LOG: list[dict[str, str]] = [
+    {
+        "id": "RD-001",
+        "title": "Empirical-Bayes Stat-Type Tail Calibration (2022-24 Fit)",
+        "finding": "Assists (+1.36%) & Rebounds (+0.17%) outperform raw model/book probability in OOS tails while Points (-0.51%) & 3PM (-0.25%) carry shooting-variance drag.",
+        "oos_lift": "Flipped 2024-25 5-Flex ROI from -8.5% -> +16.4% (ESPN) and -46.7% -> +60.0% (OddsAPI); +176.9% 5-Flex ROI on 2025-26 OddsAPI holdout.",
+        "status": "PROMOTED",
+    },
+    {
+        "id": "RD-002",
+        "title": "Unbounded 6-Feature Matchup Logit Residual",
+        "finding": "Improved Confirm 2024-25 3-Power (+31.7%) but degraded OddsAPI 2024-26 (-5.6%) due to colinearity with market line.",
+        "oos_lift": "Rejected by dual-holdout gate (zero overfit promotions).",
+        "status": "REJECTED",
+    },
+]
+
+
+def load_rd_log(state_dir: Path) -> list[dict[str, str]]:
+    """Merge persistent R&D log so scans never wipe later REJECTED/PROMOTED entries."""
+    path = state_dir / "rd_log.json"
+    if not path.exists():
+        path.write_text(json.dumps(DEFAULT_RD_LOG, indent=2))
+        return list(DEFAULT_RD_LOG)
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return list(DEFAULT_RD_LOG)
+    if not isinstance(raw, list) or not raw:
+        return list(DEFAULT_RD_LOG)
+    by_id: dict[str, dict[str, str]] = {e["id"]: e for e in DEFAULT_RD_LOG if "id" in e}
+    for entry in raw:
+        if isinstance(entry, dict) and entry.get("id"):
+            by_id[str(entry["id"])] = {str(k): str(v) for k, v in entry.items()}
+
+    def sort_key(eid: str) -> tuple[int, str]:
+        m = re.search(r"(\d+)", eid)
+        return (int(m.group(1)) if m else 10_000, eid)
+
+    return [by_id[k] for k in sorted(by_id.keys(), key=sort_key)]
+
+
+def upsert_rd_log(state_dir: Path, entry: dict[str, str]) -> list[dict[str, str]]:
+    """Insert or replace one R&D experiment row in the persistent log."""
+    rows = load_rd_log(state_dir)
+    eid = str(entry.get("id", "")).strip()
+    if not eid:
+        return rows
+    cleaned = {str(k): str(v) for k, v in entry.items()}
+    out = [cleaned if r.get("id") == eid else r for r in rows]
+    if not any(r.get("id") == eid for r in out):
+        out.append(cleaned)
+    (state_dir / "rd_log.json").write_text(json.dumps(out, indent=2))
+    return out
