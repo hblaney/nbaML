@@ -33,7 +33,7 @@ def test_stat_tail_calibration_boosts_assists_over_points() -> None:
 
 def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:
     # Jalen Green LESS 20.5 PRA, sitting at 16 PRA late Q3 in 2-pt game (~10 rem min * 0.68 PRA/min = 6.8),
-    # $24 full payout vs $10 cashout offer -> must recommend CASH_OUT!
+    # $24 full payout vs $10 cashout offer -> must recommend CASH_OUT without bench signal!
     res = evaluate_live_cashout(
         side="LESS",
         line=20.5,
@@ -46,6 +46,26 @@ def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:
     assert res["recommendation"] == "CASH_OUT"
     assert res["ev_ride_dollars"] < 10.0
     assert res["edge_of_cashout_dollars"] > 2.0
+
+
+def test_rd006_coach_bench_hook_flips_jalen_green_to_ride() -> None:
+    # Same Green spot, but with -16 +/- and already benched for Q4: rem minutes collapse,
+    # ride EV jumps above the $10 cashout -> LET_IT_RIDE (RD-006).
+    res = evaluate_live_cashout(
+        side="LESS",
+        line=20.5,
+        current_stat=16.0,
+        expected_remaining_minutes=10.0,
+        per_minute_rate=0.68,
+        full_payout_dollars=24.0,
+        cashout_offer_dollars=10.0,
+        plus_minus=-16.0,
+        already_benched=True,
+    )
+    assert res["coach_bench_hook"]["triggered"] is True
+    assert res["expected_remaining_minutes_adj"] <= 2.0
+    assert res["recommendation"] == "LET_IT_RIDE"
+    assert res["ev_ride_dollars"] >= 10.0
 
 
 def test_postmortem_classifies_clv_win_and_3pt_variance_loss(tmp_path) -> None:

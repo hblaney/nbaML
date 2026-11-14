@@ -161,6 +161,43 @@ def slip_ev_and_log_growth(
     }
 
 
+def apply_coach_bench_hook(
+    *,
+    side: Literal["MORE", "LESS"],
+    expected_remaining_minutes: float,
+    plus_minus: float | None = None,
+    already_benched: bool = False,
+    q3_inactive: bool = False,
+) -> dict[str, float | bool | str]:
+    """Shrink remaining-minute projection when coach has hook/benched a negative-PM player.
+
+    Fit on the Nov 12 Jalen Green live cashout autopsy (LESS PRA, -16 +/-, Q4 DNP):
+    riding was correct once rem-minutes collapsed. Train-only rule frozen here:
+    for LESS sides, if already benched / Q3 inactive OR plus-minus <= -12, cut
+    remaining minutes to at most 2.0 (warmup garbage only). MORE sides are
+    unchanged (benching hurts overs).
+    """
+    rem = max(float(expected_remaining_minutes), 0.0)
+    triggered = False
+    reason = "none"
+    if side == "LESS":
+        pm = float(plus_minus) if plus_minus is not None else None
+        if already_benched or q3_inactive:
+            triggered = True
+            reason = "already_benched" if already_benched else "q3_inactive"
+            rem = min(rem, 2.0)
+        elif pm is not None and pm <= -12.0:
+            triggered = True
+            reason = "plus_minus_hook"
+            # Soft hook: keep a little residual risk but slash Q4 projection
+            rem = min(rem, max(2.0, rem * 0.25))
+    return {
+        "triggered": triggered,
+        "reason": reason,
+        "adjusted_remaining_minutes": rem,
+    }
+
+
 def evaluate_live_cashout(
     *,
     side: Literal["MORE", "LESS"],
@@ -171,9 +208,20 @@ def evaluate_live_cashout(
     full_payout_dollars: float,
     cashout_offer_dollars: float,
     dispersion_alpha: float = 0.06,
+    plus_minus: float | None = None,
+    already_benched: bool = False,
+    q3_inactive: bool = False,
 ) -> dict[str, Any]:
     """Compare PrizePicks Early Payout / Cashout offer against exact NegBin ride EV."""
-    rem_mu = max(float(expected_remaining_minutes) * max(float(per_minute_rate), 0.01), 0.01)
+    hook = apply_coach_bench_hook(
+        side=side,
+        expected_remaining_minutes=expected_remaining_minutes,
+        plus_minus=plus_minus,
+        already_benched=already_benched,
+        q3_inactive=q3_inactive,
+    )
+    adj_rem = float(hook["adjusted_remaining_minutes"])
+    rem_mu = max(adj_rem * max(float(per_minute_rate), 0.01), 0.01)
     needed_diff = float(line) - float(current_stat)
 
     if side == "LESS":
@@ -205,6 +253,9 @@ def evaluate_live_cashout(
         "side": side,
         "line": float(line),
         "current_stat": float(current_stat),
+        "expected_remaining_minutes_raw": round(float(expected_remaining_minutes), 2),
+        "expected_remaining_minutes_adj": round(adj_rem, 2),
+        "coach_bench_hook": hook,
         "expected_remaining_stat": round(rem_mu, 2),
         "p_win_ride": round(p_win, 4),
         "breakeven_win_prob": round(breakeven_p, 4),
