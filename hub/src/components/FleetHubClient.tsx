@@ -113,6 +113,7 @@ export default function FleetHubClient() {
   const [spawnPrompt, setSpawnPrompt] = useState("");
   const [spawning, setSpawning] = useState(false);
   const [spawnError, setSpawnError] = useState("");
+  const spawnErrorRef = useRef<HTMLParagraphElement | null>(null);
   const [repoList, setRepoList] = useState<Array<{ name: string; url: string }>>([]);
   const [autopsyData, setAutopsyData] = useState<{
     configured: boolean;
@@ -313,18 +314,37 @@ export default function FleetHubClient() {
     return () => clearTimeout(t);
   }, [searchQuery, searchScope, runSearch]);
 
+  const showSpawnFailure = (message: string) => {
+    setSpawnError(message);
+    // Mobile Safari often hides inline errors above the keyboard — also alert.
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        spawnErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 30);
+      window.alert(message);
+    }
+  };
+
   const handleSpawn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!spawnTitle.trim() || spawning) return;
+    if (spawning) return;
     setSpawnError("");
+    if (!spawnTitle.trim()) {
+      showSpawnFailure("Name the session first (e.g. saturday-props).");
+      return;
+    }
     if (spawnKind === "cloud" && !spawnPrompt.trim()) {
-      setSpawnError("Add an opening task so the Cloud Agent knows what to do.");
+      showSpawnFailure("Add an opening task so the Cloud Agent knows what to do.");
       return;
     }
     if (spawnKind === "cloud" && data && !data.runtime.cloudApiConfigured) {
-      setSpawnError(
-        "Cloud launches need FLEET_AGENT_API_KEY. Add it in the secure Secrets form, then retry.",
+      showSpawnFailure(
+        "To reach Cursor Cloud Agents, the app needs one value. Add it in the secure form (Cursor Dashboard → API Keys → create a key → paste into FLEET_AGENT_API_KEY). Then retry Launch.",
       );
+      return;
+    }
+    if (spawnKind === "cloud" && !spawnRepo.trim().startsWith("https://")) {
+      showSpawnFailure("Cloud launches need a repo URL (https://github.com/...).");
       return;
     }
     setSpawning(true);
@@ -336,7 +356,7 @@ export default function FleetHubClient() {
           title: spawnTitle.trim(),
           kind: spawnKind,
           workdir: spawnWorkdir.trim() || "/workspace",
-          branch: spawnBranch.trim(),
+          branch: spawnBranch.trim() || "main",
           repoUrl: spawnRepo.trim(),
           initialPrompt: spawnPrompt.trim(),
         }),
@@ -347,7 +367,7 @@ export default function FleetHubClient() {
         cloudLaunchNote?: string;
       } | null;
       if (!resp.ok || !payload?.session) {
-        setSpawnError(
+        showSpawnFailure(
           payload?.error ??
             payload?.cloudLaunchNote ??
             `Launch failed (HTTP ${resp.status}). Try Cloud Agent with an opening task.`,
@@ -364,7 +384,7 @@ export default function FleetHubClient() {
         setMobileTab("chat");
       }
     } catch (err) {
-      setSpawnError(err instanceof Error ? err.message : "Network error launching session");
+      showSpawnFailure(err instanceof Error ? err.message : "Network error launching session");
     } finally {
       setSpawning(false);
     }
@@ -1272,15 +1292,19 @@ export default function FleetHubClient() {
               works when your Mac bridge daemon is running.
             </p>
             {spawnError ? (
-              <p className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-200">
+              <p
+                ref={spawnErrorRef}
+                className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-200"
+              >
                 {spawnError}
               </p>
             ) : null}
             {spawnKind === "cloud" && data && !data.runtime.cloudApiConfigured ? (
               <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-100">
-                To reach Cursor Cloud Agents, the app needs one value. Add it in the secure
-                form. If you don&apos;t have it, ask your team admin. The app switches to real
-                launches once it&apos;s added.
+                Launch will not start until a Cursor user API key is saved as{" "}
+                <b>FLEET_AGENT_API_KEY</b>. Create one at Cursor Dashboard → API Keys, then add
+                it in the secure Secrets form Cursor shows for this app. After that, Launch
+                Session spins up a real Cloud Agent.
               </p>
             ) : null}
 
@@ -1414,11 +1438,7 @@ export default function FleetHubClient() {
               </button>
               <button
                 type="submit"
-                disabled={
-                  spawning ||
-                  !spawnTitle.trim() ||
-                  (spawnKind === "cloud" && !spawnPrompt.trim())
-                }
+                disabled={spawning}
                 className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
               >
                 {spawning ? "Spawning..." : "Launch Session"}
