@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cursor-fleet": {
+      "command": "python3",
+      "args": ["-m", "tools.cursor_fleet.mcp_server"],
+      "env": {
+        "CURSOR_FLEET_HUB_URL": "http://127.0.0.1:3000"
+      }
+    }
+  }
+}
