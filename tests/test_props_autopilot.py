@@ -31,6 +31,23 @@ def test_stat_tail_calibration_boosts_assists_over_points() -> None:
     assert p_ast > 0.555 > p_pts
 
 
+def test_rd009_low_minute_over_boosts_points() -> None:
+    from nba_betting.props_autopilot.prizepicks_math import apply_low_minute_over_calibration
+
+    base = 0.56
+    boosted = apply_low_minute_over_calibration(
+        base, "Points", side="MORE", exp_minutes=18.0
+    )
+    untouched = apply_low_minute_over_calibration(
+        base, "Points", side="MORE", exp_minutes=30.0
+    )
+    less_side = apply_low_minute_over_calibration(
+        base, "Points", side="LESS", exp_minutes=18.0
+    )
+    assert boosted > base == untouched
+    assert less_side == base
+
+
 def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:
     # Jalen Green LESS 20.5 PRA, sitting at 16 PRA late Q3 in 2-pt game (~10 rem min * 0.68 PRA/min = 6.8),
     # $24 full payout vs $10 cashout offer -> must recommend CASH_OUT!

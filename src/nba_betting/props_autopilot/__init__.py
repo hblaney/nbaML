@@ -10,6 +10,7 @@ from nba_betting.props_autopilot.postmortem import (
 )
 from nba_betting.props_autopilot.prizepicks_math import (
     STAT_TAIL_CALIBRATION_22_24,
+    apply_low_minute_over_calibration,
     apply_stat_tail_calibration,
     evaluate_live_cashout,
     exact_hits_pmf,
@@ -22,6 +23,7 @@ __all__ = [
     "LegSpec",
     "STAT_TAIL_CALIBRATION_22_24",
     "analyze_leg_from_box",
+    "apply_low_minute_over_calibration",
     "apply_stat_tail_calibration",
     "configured_channels",
     "evaluate_live_cashout",
