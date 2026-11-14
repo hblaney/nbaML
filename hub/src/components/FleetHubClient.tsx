@@ -115,6 +115,7 @@ export default function FleetHubClient() {
   const [repoList, setRepoList] = useState<Array<{ name: string; url: string }>>([]);
   const [autopsyData, setAutopsyData] = useState<{
     configured: boolean;
+    ntfyTopic?: string;
     channels: string[];
     recentAutopsies: Array<{
       date: string;
@@ -917,41 +918,53 @@ export default function FleetHubClient() {
               </div>
 
               {/* Post-Close Slip Autopsies + SMS Alert Feed */}
+              <div className="mt-3 rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-indigo-200">
+                    iPhone Push Topic (ntfy app)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setPingNote("Sending...");
+                      const r = await fetch("/api/autopsies", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({}),
+                      });
+                      const j = (await r.json()) as { ok?: boolean; status?: string };
+                      setPingNote(j.ok ? "Sent to iPhone!" : j.status ?? "Error");
+                      setTimeout(() => setPingNote(""), 3500);
+                    }}
+                    className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[10px] font-medium text-white hover:bg-indigo-500"
+                  >
+                    {pingNote || "Send Test Push"}
+                  </button>
+                </div>
+                <p className="mt-1 text-[10px] text-zinc-400">
+                  In the iPhone <b>ntfy</b> app, tap <b>+</b> and type this exact Topic name:
+                </p>
+                <div className="mt-1.5 flex items-center justify-between rounded-lg bg-black/60 px-2.5 py-1.5 font-mono text-xs text-emerald-300">
+                  <span>{autopsyData?.ntfyTopic ?? "loading..."}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (autopsyData?.ntfyTopic) {
+                        void navigator.clipboard?.writeText(autopsyData.ntfyTopic);
+                      }
+                    }}
+                    className="text-[10px] text-zinc-400 hover:text-white"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+
               <div className="mt-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
                     Post-Close Slip Autopsies
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setPingNote("Sending...");
-                        const r = await fetch("/api/autopsies", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({}),
-                        });
-                        const j = (await r.json()) as { ok?: boolean; status?: string };
-                        setPingNote(j.ok ? "Sent to iPhone!" : j.status ?? "Pending");
-                        setTimeout(() => setPingNote(""), 3000);
-                      }}
-                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-200 hover:border-indigo-400"
-                    >
-                      {pingNote || "Test ntfy Push"}
-                    </button>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] ${
-                        autopsyData?.configured
-                          ? "bg-emerald-500/15 text-emerald-300"
-                          : "bg-amber-500/15 text-amber-300"
-                      }`}
-                    >
-                      {autopsyData?.configured
-                        ? `ntfy Live`
-                        : "ntfy Pending"}
-                    </span>
-                  </div>
                 </div>
 
                 {(autopsyData?.recentAutopsies ?? []).map((au) => (

@@ -1,24 +1,31 @@
+import { randomBytes } from "node:crypto";
 import { authorizeRequest, jsonNoStore } from "@/lib/auth";
+import { sql } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-const SAFE_TOPIC = /^[a-zA-Z0-9_-]{4,80}$/;
+const SAFE_TOPIC = /^[a-zA-Z0-9_-]{6,64}$/;
 
-function detectAlertChannels(): string[] {
-  const ch: string[] = [];
-  if (
-    process.env.TWILIO_ACCOUNT_SID &&
-    process.env.TWILIO_AUTH_TOKEN &&
-    process.env.TWILIO_FROM_NUMBER &&
-    process.env.ALERT_TO_PHONE
-  ) {
-    ch.push("twilio_sms");
+async function getOrCreateTopic(ownerKey: string): Promise<string> {
+  const envTopic = (process.env.NTFY_TOPIC ?? "").trim();
+  const rows = await sql<{ ntfy_topic: string }>(
+    "select ntfy_topic from fleet_alert_settings where owner_key = $1 limit 1",
+    [ownerKey],
+  );
+  if (rows[0]?.ntfy_topic) {
+    return rows[0].ntfy_topic;
   }
-  if (process.env.NTFY_TOPIC) ch.push("ntfy_push");
-  if (process.env.PUSHOVER_USER_KEY && process.env.PUSHOVER_API_TOKEN) ch.push("pushover");
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) ch.push("telegram");
-  if (process.env.ALERT_WEBHOOK_URL) ch.push("webhook");
-  return ch;
+  const generated =
+    envTopic && SAFE_TOPIC.test(envTopic)
+      ? envTopic
+      : `nba-props-${randomBytes(5).toString("hex")}`;
+  await sql(
+    `insert into fleet_alert_settings (owner_key, ntfy_topic, enabled, updated_at)
+     values ($1, $2, true, now())
+     on conflict (owner_key) do nothing`,
+    [ownerKey, generated],
+  );
+  return generated;
 }
 
 export async function POST(request: Request) {
@@ -32,26 +39,36 @@ export async function POST(request: Request) {
     return jsonNoStore({ error: "Invalid JSON body" }, 400);
   }
 
-  const rawTopic = (process.env.NTFY_TOPIC ?? "").trim();
-  if (!rawTopic) {
-    return jsonNoStore({
-      ok: false,
-      status: "topic_not_configured",
-      message: "NTFY_TOPIC is not bound yet on this host.",
-    });
+  if (body.op === "save_topic") {
+    const nextTopic = String(body.ntfyTopic ?? "").trim();
+    if (!SAFE_TOPIC.test(nextTopic)) {
+      return jsonNoStore(
+        { ok: false, error: "Topic must be 6-64 letters, numbers, or hyphens" },
+        400,
+      );
+    }
+    await sql(
+      `insert into fleet_alert_settings (owner_key, ntfy_topic, enabled, updated_at)
+       values ($1, $2, true, now())
+       on conflict (owner_key) do update set ntfy_topic = excluded.ntfy_topic, updated_at = now()`,
+      [caller.ownerKey, nextTopic],
+    );
+    return jsonNoStore({ ok: true, ntfyTopic: nextTopic });
   }
-  if (!SAFE_TOPIC.test(rawTopic)) {
+
+  const topic = await getOrCreateTopic(caller.ownerKey);
+  if (!SAFE_TOPIC.test(topic)) {
     return jsonNoStore({ ok: false, status: "invalid_topic" }, 400);
   }
 
   const title = String(body.title ?? "NBA Props 24/7 Autopilot").slice(0, 100);
   const message = String(
     body.message ??
-      "ntfy alerts connected! You will get automatic alerts on every R&D breakthrough, 1-a-day PrizePicks lock, and post-close slip autopsy.",
+      "Connected! Every promoted R&D upgrade, 1-a-day PrizePicks card, and post-close slip autopsy will buzz your iPhone here.",
   ).slice(0, 1000);
 
   try {
-    const resp = await fetch(`https://ntfy.sh/${encodeURIComponent(rawTopic)}`, {
+    const resp = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
       method: "POST",
       headers: {
         Title: title,
@@ -62,6 +79,7 @@ export async function POST(request: Request) {
     });
     return jsonNoStore({
       ok: resp.ok,
+      ntfyTopic: topic,
       status: resp.ok ? "sent" : `http_${resp.status}`,
     });
   } catch {
@@ -73,10 +91,11 @@ export async function GET(request: Request) {
   const caller = await authorizeRequest(request);
   if (caller instanceof Response) return caller;
 
-  const channels = detectAlertChannels();
+  const topic = await getOrCreateTopic(caller.ownerKey);
   return jsonNoStore({
-    configured: channels.length > 0,
-    channels,
+    configured: true,
+    ntfyTopic: topic,
+    channels: ["ntfy_push"],
     recentAutopsies: [
       {
         date: "Thu Nov 12, 2026",
