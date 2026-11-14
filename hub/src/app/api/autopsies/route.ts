@@ -2,6 +2,8 @@ import { authorizeRequest, jsonNoStore } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+const SAFE_TOPIC = /^[a-zA-Z0-9_-]{4,80}$/;
+
 function detectAlertChannels(): string[] {
   const ch: string[] = [];
   if (
@@ -17,6 +19,54 @@ function detectAlertChannels(): string[] {
   if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) ch.push("telegram");
   if (process.env.ALERT_WEBHOOK_URL) ch.push("webhook");
   return ch;
+}
+
+export async function POST(request: Request) {
+  const caller = await authorizeRequest(request, { requireCsrfForWrite: true });
+  if (caller instanceof Response) return caller;
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return jsonNoStore({ error: "Invalid JSON body" }, 400);
+  }
+
+  const rawTopic = (process.env.NTFY_TOPIC ?? "").trim();
+  if (!rawTopic) {
+    return jsonNoStore({
+      ok: false,
+      status: "topic_not_configured",
+      message: "NTFY_TOPIC is not bound yet on this host.",
+    });
+  }
+  if (!SAFE_TOPIC.test(rawTopic)) {
+    return jsonNoStore({ ok: false, status: "invalid_topic" }, 400);
+  }
+
+  const title = String(body.title ?? "NBA Props 24/7 Autopilot").slice(0, 100);
+  const message = String(
+    body.message ??
+      "ntfy alerts connected! You will get automatic alerts on every R&D breakthrough, 1-a-day PrizePicks lock, and post-close slip autopsy.",
+  ).slice(0, 1000);
+
+  try {
+    const resp = await fetch(`https://ntfy.sh/${encodeURIComponent(rawTopic)}`, {
+      method: "POST",
+      headers: {
+        Title: title,
+        Priority: "high",
+      },
+      body: message,
+      signal: AbortSignal.timeout(8000),
+    });
+    return jsonNoStore({
+      ok: resp.ok,
+      status: resp.ok ? "sent" : `http_${resp.status}`,
+    });
+  } catch {
+    return jsonNoStore({ ok: false, status: "network_error" }, 502);
+  }
 }
 
 export async function GET(request: Request) {

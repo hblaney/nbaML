@@ -185,6 +185,7 @@ export default function FleetHubClient() {
   }, [loadPrizePicksLive]);
 
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [pingNote, setPingNote] = useState("");
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -917,21 +918,40 @@ export default function FleetHubClient() {
 
               {/* Post-Close Slip Autopsies + SMS Alert Feed */}
               <div className="mt-3 space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
                     Post-Close Slip Autopsies
                   </span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] ${
-                      autopsyData?.configured
-                        ? "bg-emerald-500/15 text-emerald-300"
-                        : "bg-amber-500/15 text-amber-300"
-                    }`}
-                  >
-                    {autopsyData?.configured
-                      ? `SMS Live (${autopsyData.channels.join(", ")})`
-                      : "SMS Pending Provider"}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setPingNote("Sending...");
+                        const r = await fetch("/api/autopsies", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({}),
+                        });
+                        const j = (await r.json()) as { ok?: boolean; status?: string };
+                        setPingNote(j.ok ? "Sent to iPhone!" : j.status ?? "Pending");
+                        setTimeout(() => setPingNote(""), 3000);
+                      }}
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-200 hover:border-indigo-400"
+                    >
+                      {pingNote || "Test ntfy Push"}
+                    </button>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] ${
+                        autopsyData?.configured
+                          ? "bg-emerald-500/15 text-emerald-300"
+                          : "bg-amber-500/15 text-amber-300"
+                      }`}
+                    >
+                      {autopsyData?.configured
+                        ? `ntfy Live`
+                        : "ntfy Pending"}
+                    </span>
+                  </div>
                 </div>
 
                 {(autopsyData?.recentAutopsies ?? []).map((au) => (
