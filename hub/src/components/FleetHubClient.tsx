@@ -85,8 +85,12 @@ export default function FleetHubClient() {
   const [loading, setLoading] = useState(true);
 
   const [selectedId, setSelectedId] = useState<string>("bus");
-  const [mobileTab, setMobileTab] = useState<"sessions" | "chat" | "terminal" | "search">("chat");
-  const [rightTab, setRightTab] = useState<"terminal" | "search" | "setup">("terminal");
+  const [mobileTab, setMobileTab] = useState<
+    "sessions" | "chat" | "prizepicks" | "terminal" | "search"
+  >("chat");
+  const [rightTab, setRightTab] = useState<"prizepicks" | "terminal" | "search" | "setup">(
+    "prizepicks",
+  );
 
   const [draft, setDraft] = useState("");
   const [sendMode, setSendMode] = useState<"user" | "session">("user");
@@ -108,6 +112,62 @@ export default function FleetHubClient() {
   const [spawnRepo, setSpawnRepo] = useState("https://github.com/hblaney/nbaML");
   const [spawnPrompt, setSpawnPrompt] = useState("");
   const [spawning, setSpawning] = useState(false);
+  const [repoList, setRepoList] = useState<Array<{ name: string; url: string }>>([]);
+
+  // 24/7 PrizePicks Autopilot live state
+  const [ppLoading, setPpLoading] = useState(false);
+  const [ppData, setPpData] = useState<{
+    scannedAt?: string;
+    upcomingGames?: number;
+    bestSlipType?: string;
+    bestSlipLegs?: Array<{
+      gameId: string;
+      matchup: string;
+      player: string;
+      team: string;
+      stat: string;
+      side: "MORE" | "LESS";
+      ppLine: number;
+      dkLine: number;
+      dkOdds: string;
+      pCalibrated: number;
+    }>;
+    allTopEdges?: Array<{
+      gameId: string;
+      matchup: string;
+      player: string;
+      team: string;
+      stat: string;
+      side: "MORE" | "LESS";
+      ppLine: number;
+      dkLine: number;
+      dkOdds: string;
+      pCalibrated: number;
+    }>;
+    rdUpgrades?: Array<{ id: string; status: string; title: string; summary: string }>;
+  } | null>(null);
+
+  const loadPrizePicksLive = useCallback(async () => {
+    setPpLoading(true);
+    try {
+      const resp = await fetch("/api/prizepicks", { cache: "no-store" });
+      if (resp.ok) {
+        setPpData(await resp.json());
+      }
+    } finally {
+      setPpLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPrizePicksLive();
+    fetch("/api/cloud-repos", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j?.repositories) setRepoList(j.repositories);
+      })
+      .catch(() => {});
+  }, [loadPrizePicksLive]);
 
   const [copiedCmd, setCopiedCmd] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -664,27 +724,44 @@ export default function FleetHubClient() {
           </form>
         </main>
 
-        {/* RIGHT PANE: Live tmux Terminal Snapshot + Permanent Postgres Search */}
+        {/* RIGHT PANE: 24/7 PrizePicks Autopilot + Live tmux Pane + Permanent Postgres Search */}
         <section
           className={`${
-            mobileTab === "terminal" || mobileTab === "search" ? "flex" : "hidden"
-          } w-full shrink-0 flex-col border-l border-zinc-800/80 bg-[#0b0e14] lg:flex lg:w-[400px]`}
+            mobileTab === "prizepicks" || mobileTab === "terminal" || mobileTab === "search"
+              ? "flex"
+              : "hidden"
+          } w-full shrink-0 flex-col border-l border-zinc-800/80 bg-[#0b0e14] lg:flex lg:w-[420px]`}
         >
-          <div className="flex border-b border-zinc-800/80 px-2 pt-2">
+          <div className="flex overflow-x-auto border-b border-zinc-800/80 px-2 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setRightTab("prizepicks");
+                setMobileTab("prizepicks");
+              }}
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-xs font-medium ${
+                rightTab === "prizepicks" && mobileTab !== "search" && mobileTab !== "terminal"
+                  ? "border-fuchsia-400 text-fuchsia-300"
+                  : "border-transparent text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Props 24/7
+            </button>
             <button
               type="button"
               onClick={() => {
                 setRightTab("terminal");
                 setMobileTab("terminal");
               }}
-              className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium ${
-                rightTab === "terminal" && mobileTab !== "search"
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-xs font-medium ${
+                rightTab === "terminal" || mobileTab === "terminal"
                   ? "border-emerald-400 text-emerald-300"
                   : "border-transparent text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <Terminal className="h-3.5 w-3.5" />
-              Live tmux Pane
+              tmux
             </button>
             <button
               type="button"
@@ -692,30 +769,138 @@ export default function FleetHubClient() {
                 setRightTab("search");
                 setMobileTab("search");
               }}
-              className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium ${
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-xs font-medium ${
                 rightTab === "search" || mobileTab === "search"
                   ? "border-indigo-400 text-indigo-300"
                   : "border-transparent text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <History className="h-3.5 w-3.5" />
-              Postgres Memory
+              Memory
             </button>
             <button
               type="button"
               onClick={() => setRightTab("setup")}
-              className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium ${
-                rightTab === "setup" && mobileTab !== "search"
+              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-xs font-medium ${
+                rightTab === "setup" &&
+                mobileTab !== "search" &&
+                mobileTab !== "terminal" &&
+                mobileTab !== "prizepicks"
                   ? "border-amber-400 text-amber-300"
                   : "border-transparent text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <Cloud className="h-3.5 w-3.5" />
-              Bridge & MCP
+              Bridge
             </button>
           </div>
 
-          {rightTab === "search" || mobileTab === "search" ? (
+          {rightTab === "prizepicks" &&
+          mobileTab !== "search" &&
+          mobileTab !== "terminal" ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3.5 text-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] font-semibold tracking-wider text-fuchsia-300 uppercase">
+                    24/7 PrizePicks Autopilot
+                  </span>
+                  <p className="text-[11px] text-zinc-400">
+                    {ppData?.bestSlipType ?? "Scanning live board vs DraftKings..."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadPrizePicksLive()}
+                  disabled={ppLoading}
+                  className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] text-zinc-300 hover:border-zinc-700"
+                >
+                  <RefreshCw className={`h-3 w-3 ${ppLoading ? "animate-spin" : ""}`} />
+                  Scan
+                </button>
+              </div>
+
+              {/* Optimal 1-a-Day Card */}
+              <div className="mt-3 rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-zinc-100">
+                    Best 1-a-Day Slip (1 Player / Game)
+                  </span>
+                  <span className="text-zinc-400">
+                    {ppData?.scannedAt ? formatClock(ppData.scannedAt) : ""}
+                  </span>
+                </div>
+
+                {ppData?.bestSlipLegs && ppData.bestSlipLegs.length > 0 ? (
+                  <div className="mt-2.5 space-y-2">
+                    {ppData.bestSlipLegs.map((leg, idx) => (
+                      <div
+                        key={`${leg.gameId}-${leg.player}-${leg.stat}`}
+                        className="rounded-lg border border-zinc-800/90 bg-zinc-900/90 p-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-zinc-100">
+                            {idx + 1}. {leg.player} ({leg.team})
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
+                              leg.side === "LESS"
+                                ? "bg-rose-500/20 text-rose-300"
+                                : "bg-emerald-500/20 text-emerald-300"
+                            }`}
+                          >
+                            {leg.side} {leg.ppLine} {leg.stat}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-[10px] text-zinc-400">
+                          <span>
+                            {leg.matchup} • DK {leg.dkLine} ({leg.dkOdds})
+                          </span>
+                          <span className="font-mono text-fuchsia-300">
+                            {(leg.pCalibrated * 100).toFixed(1)}% win
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-[11px] text-zinc-400">
+                    {ppLoading
+                      ? "Pulling live PrizePicks & DraftKings lines..."
+                      : "Between slates — waiting for pre-game DraftKings two-way prop lines to post for tomorrow's games."}
+                  </p>
+                )}
+              </div>
+
+              {/* 24/7 R&D Lab Promotions */}
+              <div className="mt-3 space-y-2">
+                <div className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
+                  Autonomous R&D Hillclimber Log
+                </div>
+                {(ppData?.rdUpgrades ?? []).map((rd) => (
+                  <div
+                    key={rd.id}
+                    className="rounded-xl border border-zinc-800 bg-zinc-900/80 p-2.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-zinc-200">{rd.title}</span>
+                      <span
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                          rd.status === "PROMOTED"
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-zinc-800 text-zinc-400"
+                        }`}
+                      >
+                        {rd.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                      {rd.summary}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : rightTab === "search" || mobileTab === "search" ? (
             <div className="flex min-h-0 flex-1 flex-col p-3.5">
               <div className="relative">
                 <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-zinc-500" />
@@ -843,7 +1028,7 @@ export default function FleetHubClient() {
       </div>
 
       {/* Phone Bottom Navigation Bar */}
-      <nav className="grid shrink-0 grid-cols-4 border-t border-zinc-800 bg-[#0d1017] py-1.5 md:hidden">
+      <nav className="grid shrink-0 grid-cols-5 border-t border-zinc-800 bg-[#0d1017] py-1.5 md:hidden">
         <button
           type="button"
           onClick={() => setMobileTab("sessions")}
@@ -863,6 +1048,19 @@ export default function FleetHubClient() {
         >
           <MessageSquare className="h-4 w-4" />
           Chat
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setRightTab("prizepicks");
+            setMobileTab("prizepicks");
+          }}
+          className={`flex flex-col items-center gap-0.5 py-1 text-[10px] ${
+            mobileTab === "prizepicks" ? "text-fuchsia-400" : "text-zinc-400"
+          }`}
+        >
+          <Sparkles className="h-4 w-4" />
+          Props 24/7
         </button>
         <button
           type="button"
@@ -961,25 +1159,43 @@ export default function FleetHubClient() {
                   />
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs text-zinc-400">GitHub Repo URL</label>
-                    <input
-                      type="url"
-                      value={spawnRepo}
-                      onChange={(e) => setSpawnRepo(e.target.value)}
-                      className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-2.5 py-2 font-mono text-xs text-zinc-200"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-zinc-400">Base Branch</label>
-                    <input
-                      type="text"
-                      value={spawnBranch}
-                      onChange={(e) => setSpawnBranch(e.target.value)}
-                      placeholder="main"
-                      className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-2.5 py-2 font-mono text-xs text-zinc-200"
-                    />
+                <div className="space-y-2">
+                  {repoList.length > 0 && (
+                    <div>
+                      <label className="block text-xs text-zinc-400">Quick Pick Repo</label>
+                      <select
+                        value={spawnRepo}
+                        onChange={(e) => setSpawnRepo(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-200"
+                      >
+                        {repoList.map((r) => (
+                          <option key={r.url} value={r.url}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-zinc-400">GitHub Repo URL</label>
+                      <input
+                        type="url"
+                        value={spawnRepo}
+                        onChange={(e) => setSpawnRepo(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-2.5 py-2 font-mono text-xs text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400">Base Branch</label>
+                      <input
+                        type="text"
+                        value={spawnBranch}
+                        onChange={(e) => setSpawnBranch(e.target.value)}
+                        placeholder="main"
+                        className="mt-1 w-full rounded-xl border border-zinc-800 bg-zinc-900 px-2.5 py-2 font-mono text-xs text-zinc-200"
+                      />
+                    </div>
                   </div>
                 </div>
               )}
