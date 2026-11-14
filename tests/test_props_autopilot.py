@@ -46,3 +46,60 @@ def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:
     assert res["recommendation"] == "CASH_OUT"
     assert res["ev_ride_dollars"] < 10.0
     assert res["edge_of_cashout_dollars"] > 2.0
+
+
+def test_postmortem_classifies_clv_win_and_3pt_variance_loss(tmp_path) -> None:
+    from nba_betting.props_autopilot.notifier import send_advancement_alert
+    from nba_betting.props_autopilot.postmortem import LegSpec, analyze_leg_from_box
+
+    # 1. Ayo Dosunmu MORE 17.5 PTS (DK 18.5) landing on exact 18 -> CLV_SAVED_WIN
+    ayo = analyze_leg_from_box(
+        LegSpec(
+            game_id="401909978",
+            player_name="Ayo Dosunmu",
+            team="MIN",
+            stat_type="Points",
+            side="MORE",
+            pp_line=17.5,
+            dk_line_at_lock=18.5,
+            exp_minutes=33.0,
+            pregame_spread_abs=5.5,
+        ),
+        matchup="DAL@MIN",
+        final_score="DAL 94, MIN 133",
+        final_margin_abs=39,
+        overtime_periods=0,
+        player_stats={"MIN": "27", "PTS": "18", "REB": "2", "AST": "1", "FG": "8-15", "3PT": "2-4", "FT": "0-0", "PF": "1"},
+    )
+    assert ayo.outcome == "WIN"
+    assert ayo.verdict_tag == "CLV_SAVED_WIN"
+    assert ayo.clv_pts == 1.0
+
+    # 2. Desmond Bane LESS 20.5 PTS (DK 19.5) going 6-10 from 3PT for 21 PTS -> GOOD_PROCESS_3PT_VARIANCE_LOSS
+    bane = analyze_leg_from_box(
+        LegSpec(
+            game_id="401909297",
+            player_name="Desmond Bane",
+            team="ORL",
+            stat_type="Points",
+            side="LESS",
+            pp_line=20.5,
+            dk_line_at_lock=19.5,
+            exp_minutes=35.0,
+            pregame_spread_abs=8.5,
+        ),
+        matchup="MIL@ORL",
+        final_score="MIL 99, ORL 107",
+        final_margin_abs=8,
+        overtime_periods=0,
+        player_stats={"MIN": "35", "PTS": "21", "REB": "5", "AST": "3", "FG": "7-13", "3PT": "6-10", "FT": "1-1", "PF": "6"},
+    )
+    assert bane.outcome == "LOSS"
+    assert bane.verdict_tag == "GOOD_PROCESS_3PT_VARIANCE_LOSS"
+    assert bane.three_pt_points_over_expected >= 6.0
+
+    # 3. Alert outbox logs cleanly when no SMS env vars are set
+    outbox = tmp_path / "alerts.jsonl"
+    rec = send_advancement_alert("RD-001 Promoted", "5-Flex OOS +60% ROI", log_path=outbox)
+    assert rec["status"] == "queued_awaiting_provider"
+    assert outbox.exists()

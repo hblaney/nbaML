@@ -113,6 +113,15 @@ export default function FleetHubClient() {
   const [spawnPrompt, setSpawnPrompt] = useState("");
   const [spawning, setSpawning] = useState(false);
   const [repoList, setRepoList] = useState<Array<{ name: string; url: string }>>([]);
+  const [autopsyData, setAutopsyData] = useState<{
+    configured: boolean;
+    channels: string[];
+    recentAutopsies: Array<{
+      date: string;
+      slip: string;
+      legs: Array<{ player: string; pick: string; actual: string; tag: string; note: string }>;
+    }>;
+  } | null>(null);
 
   // 24/7 PrizePicks Autopilot live state
   const [ppLoading, setPpLoading] = useState(false);
@@ -165,6 +174,12 @@ export default function FleetHubClient() {
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
         if (j?.repositories) setRepoList(j.repositories);
+      })
+      .catch(() => {});
+    fetch("/api/autopsies", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j) setAutopsyData(j);
       })
       .catch(() => {});
   }, [loadPrizePicksLive]);
@@ -896,6 +911,61 @@ export default function FleetHubClient() {
                     <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
                       {rd.summary}
                     </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Post-Close Slip Autopsies + SMS Alert Feed */}
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold tracking-wider text-zinc-400 uppercase">
+                    Post-Close Slip Autopsies
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] ${
+                      autopsyData?.configured
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : "bg-amber-500/15 text-amber-300"
+                    }`}
+                  >
+                    {autopsyData?.configured
+                      ? `SMS Live (${autopsyData.channels.join(", ")})`
+                      : "SMS Pending Provider"}
+                  </span>
+                </div>
+
+                {(autopsyData?.recentAutopsies ?? []).map((au) => (
+                  <div
+                    key={au.date}
+                    className="rounded-xl border border-zinc-800 bg-zinc-900/80 p-2.5"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-zinc-100">{au.date}</span>
+                      <span className="font-mono text-[10px] text-indigo-300">{au.slip}</span>
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {au.legs.map((lg) => (
+                        <div
+                          key={`${au.date}-${lg.player}`}
+                          className="rounded-lg bg-black/40 p-2 text-[11px]"
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-medium text-zinc-200">
+                              {lg.player} • {lg.pick}
+                            </span>
+                            <span className="font-mono text-[10px] text-zinc-400">
+                              {lg.actual}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 font-mono text-[10px] text-fuchsia-300">
+                            {lg.tag}
+                          </div>
+                          <p className="mt-0.5 text-[10px] leading-relaxed text-zinc-400">
+                            {lg.note}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
