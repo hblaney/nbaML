@@ -69,3 +69,46 @@ def choose_blend_weight(
         best["confirm"]["ml_brier"] < float(market_confirm["ml_brier"]) - 1e-4
     )
     return best
+
+
+def expanding_odds_ratings_blend(
+    p_market: np.ndarray | pd.Series,
+    p_model: np.ndarray | pd.Series,
+    y: np.ndarray | pd.Series,
+    *,
+    min_train: int = 200,
+    refit_every: int = 25,
+    grid: np.ndarray | None = None,
+) -> np.ndarray:
+    """Walk-forward blend of closing ML (market) + ratings model.
+
+    For each game ``i``, choose ``w_model`` that minimizes Brier on games
+    ``0..i-1`` only (refit every ``refit_every`` steps after ``min_train``).
+    Until ``min_train``, emit the market probability. No game-outcome leakage.
+    """
+    if grid is None:
+        grid = np.linspace(0.0, 0.4, 17)
+    mkt = np.asarray(p_market, dtype=float)
+    mod = np.asarray(p_model, dtype=float)
+    yy = np.asarray(y, dtype=float)
+    if not (len(mkt) == len(mod) == len(yy)):
+        raise ValueError("p_market, p_model, and y must have equal length")
+    out = np.empty(len(yy), dtype=float)
+    w_cur = 0.0
+    last = -10**9
+    for i in range(len(yy)):
+        if i < int(min_train):
+            out[i] = float(mkt[i])
+            continue
+        if i - last >= int(refit_every):
+            best_w, best_b = 0.0, 1e9
+            for w in grid:
+                p = float(w) * mod[:i] + (1.0 - float(w)) * mkt[:i]
+                b = float(np.mean((p - yy[:i]) ** 2))
+                if b < best_b:
+                    best_b = b
+                    best_w = float(w)
+            w_cur = best_w
+            last = i
+        out[i] = w_cur * mod[i] + (1.0 - w_cur) * mkt[i]
+    return np.clip(out, 1e-6, 1.0 - 1e-6)
