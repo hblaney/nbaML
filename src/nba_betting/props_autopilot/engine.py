@@ -19,6 +19,7 @@ from scipy.stats import nbinom
 
 from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
+    select_slip_legs,
     settle_prizepicks_slip,
     slip_ev_and_log_growth,
 )
@@ -426,36 +427,42 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
             & (sc_df["p_calibrated"] >= 0.548)
         ].copy()
         top_edges = clean.head(12).to_dict(orient="records")
-        distinct_game = clean.drop_duplicates(subset=["game_id"], keep="first").sort_values(
-            "p_calibrated", ascending=False
-        )
+        # Preserve p_calibrated rank; unique-game + RD-091 diversity handled in select_slip_legs.
+        ranked = clean.sort_values("p_calibrated", ascending=False).to_dict(orient="records")
         best_choice = None
-        for k_legs, mode, label in [
-            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)"),
-            (4, "flex", "4-Pick Flex (6x / 1.5x)"),
-            (3, "power", "3-Pick Power (6x)"),
+        for k_legs, mode, label, min_prop_types in [
+            # RD-091 / v2.4-soft1.0-div2: 5-Flex must span ≥2 prop_type categories.
+            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)", 2),
+            (4, "flex", "4-Pick Flex (6x / 1.5x)", None),
+            (3, "power", "3-Pick Power (6x)", None),
         ]:
-            if len(distinct_game) >= k_legs:
-                sub = distinct_game.iloc[:k_legs]
-                metrics = slip_ev_and_log_growth(
-                    sub["p_calibrated"].tolist(),
-                    mode=mode,  # type: ignore[arg-type]
-                    c_kelly=0.50,
-                    max_frac=0.06,
-                )
-                if metrics["ev"] > 0 and (
-                    best_choice is None or metrics["expected_log_growth"] > best_choice[0]
-                ):
-                    best_choice = (
-                        metrics["expected_log_growth"],
-                        {
-                            "slip_type": label,
-                            "mode": mode,
-                            "n_legs": k_legs,
-                            **metrics,
-                            "legs": sub.to_dict(orient="records"),
-                        },
-                    )
+            legs = select_slip_legs(
+                ranked,
+                n_legs=k_legs,
+                min_distinct_prop_types=min_prop_types,
+            )
+            if len(legs) < k_legs:
+                continue
+            metrics = slip_ev_and_log_growth(
+                [float(x["p_calibrated"]) for x in legs],
+                mode=mode,  # type: ignore[arg-type]
+                c_kelly=0.50,
+                max_frac=0.06,
+            )
+            if metrics["ev"] > 0 and (
+                best_choice is None or metrics["expected_log_growth"] > best_choice[0]
+            ):
+                slip: dict[str, Any] = {
+                    "slip_type": label,
+                    "mode": mode,
+                    "n_legs": k_legs,
+                    **metrics,
+                    "legs": legs,
+                }
+                if min_prop_types is not None:
+                    slip["min_distinct_prop_types"] = min_prop_types
+                    slip["champion"] = "v2.4-soft1.0-div2"
+                best_choice = (metrics["expected_log_growth"], slip)
         if best_choice is not None:
             recommended_slip = best_choice[1]
 
@@ -474,7 +481,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         "prizepicks_standard_props_live": int(len(pp_df)),
         "upcoming_games_scanned": int(len(gm_df)),
         "matched_two_way_props": int(len(sc_df)),
-        "active_model_version": "v2.1-stat-bayes-blowout",
+        "active_model_version": "v2.4-soft1.0-div2",
         "promoted_rd_upgrades": [
             {
                 "id": "RD-001",
@@ -489,6 +496,13 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
                 "finding": "Improved Confirm 2024-25 3-Power (+31.7%) but degraded OddsAPI 2024-26 (-5.6%) due to colinearity with market line.",
                 "oos_lift": "Rejected by dual-holdout gate (zero overfit promotions).",
                 "status": "REJECTED",
+            },
+            {
+                "id": "RD-091",
+                "title": "Require ≥2 distinct prop_types per 5-Pick Flex",
+                "finding": "Single-category 5-Flex stacks overfit same-side concentration; enforcing ≥2 prop_type categories lifts ESPN confirm/holdout while OddsAPI stays non-negative.",
+                "oos_lift": "ESPN confirm ΔROI +0.124; holdout ΔROI +0.012; OddsAPI confirm/holdout ΔROI 0.0 / 0.0.",
+                "status": "PROMOTED",
             },
         ],
         "recommended_slip": recommended_slip,
