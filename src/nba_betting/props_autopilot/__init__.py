@@ -13,6 +13,7 @@ from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
     evaluate_live_cashout,
     exact_hits_pmf,
+    select_slip_legs,
     settle_prizepicks_slip,
     slip_ev_and_log_growth,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "evaluate_live_cashout",
     "exact_hits_pmf",
     "fetch_and_autopsy_leg",
+    "select_slip_legs",
     "send_advancement_alert",
     "settle_prizepicks_slip",
     "slip_ev_and_log_growth",

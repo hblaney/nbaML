@@ -6,6 +6,7 @@ from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
     evaluate_live_cashout,
     exact_hits_pmf,
+    select_slip_legs,
     settle_prizepicks_slip,
     slip_ev_and_log_growth,
 )
@@ -29,6 +30,41 @@ def test_stat_tail_calibration_boosts_assists_over_points() -> None:
     p_ast = apply_stat_tail_calibration(0.555, "Assists")
     p_pts = apply_stat_tail_calibration(0.555, "Points")
     assert p_ast > 0.555 > p_pts
+
+
+def test_select_slip_legs_enforces_rd091_prop_type_diversity() -> None:
+    """v2.4-soft1.0-div2: 5-Flex must span ≥2 distinct prop_type categories."""
+    # Top-5 by p would be all Points across unique games — diversity must swap in Pts+Asts.
+    cands = [
+        {"game_id": "g1", "stat": "Points", "player": "A", "p_calibrated": 0.60},
+        {"game_id": "g2", "stat": "Points", "player": "B", "p_calibrated": 0.59},
+        {"game_id": "g3", "stat": "Points", "player": "C", "p_calibrated": 0.58},
+        {"game_id": "g4", "stat": "Points", "player": "D", "p_calibrated": 0.57},
+        {"game_id": "g5", "stat": "Points", "player": "E", "p_calibrated": 0.56},
+        {"game_id": "g6", "stat": "Pts+Asts", "player": "F", "p_calibrated": 0.555},
+    ]
+    legs = select_slip_legs(cands, n_legs=5, min_distinct_prop_types=2)
+    assert len(legs) == 5
+    assert {x["stat"] for x in legs} == {"Points", "Pts+Asts"}
+    assert legs[-1]["player"] == "F"
+
+    # Same-game duplicate skipped; still forms diverse 5.
+    with_dupe = [
+        {"game_id": "g1", "stat": "Points", "player": "A", "p_calibrated": 0.61},
+        {"game_id": "g1", "stat": "Assists", "player": "A2", "p_calibrated": 0.605},
+        *cands[1:],
+    ]
+    legs2 = select_slip_legs(with_dupe, n_legs=5, min_distinct_prop_types=2)
+    assert len(legs2) == 5
+    assert len({x["game_id"] for x in legs2}) == 5
+    assert len({x["stat"] for x in legs2}) >= 2
+
+    # Impossible diversity → empty (all Points, only 5 games).
+    mono = cands[:5]
+    assert select_slip_legs(mono, n_legs=5, min_distinct_prop_types=2) == []
+
+    # Without the floor, mono 5-Flex is allowed (legacy behavior for non-5 or opt-out).
+    assert len(select_slip_legs(mono, n_legs=5, min_distinct_prop_types=None)) == 5
 
 
 def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:

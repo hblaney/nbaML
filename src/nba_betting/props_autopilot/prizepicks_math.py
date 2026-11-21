@@ -65,6 +65,53 @@ def exact_hits_pmf(probs: Sequence[float]) -> np.ndarray:
     return dp
 
 
+def select_slip_legs(
+    candidates: Sequence[dict[str, Any]],
+    *,
+    n_legs: int,
+    min_distinct_prop_types: int | None = None,
+    prop_key: str = "stat",
+    game_key: str = "game_id",
+    score_key: str = "p_calibrated",
+) -> list[dict[str, Any]]:
+    """Greedy unique-game slip builder with optional prop-type diversity (RD-091).
+
+    Candidates should already be sorted best-first by ``score_key``. Returns an
+    empty list when a full ``n_legs`` ticket satisfying the diversity floor
+    cannot be formed. For champion ``v2.4-soft1.0-div2``, 5-Pick Flex uses
+    ``min_distinct_prop_types=2``.
+    """
+    if n_legs < 1:
+        return []
+    picked: list[dict[str, Any]] = []
+    seen_games: set[Any] = set()
+    prop_types: set[str] = set()
+    for leg in candidates:
+        game = leg.get(game_key)
+        if game in seen_games:
+            continue
+        prop = str(leg.get(prop_key) or "")
+        next_types = prop_types | ({prop} if prop else set())
+        # Last slot: refuse a pick that would leave the ticket below the floor.
+        if (
+            min_distinct_prop_types is not None
+            and len(picked) == n_legs - 1
+            and len(next_types) < min_distinct_prop_types
+        ):
+            continue
+        seen_games.add(game)
+        picked.append(dict(leg))
+        if prop:
+            prop_types.add(prop)
+        if len(picked) >= n_legs:
+            break
+    if len(picked) < n_legs:
+        return []
+    if min_distinct_prop_types is not None and len(prop_types) < min_distinct_prop_types:
+        return []
+    return picked
+
+
 def settle_prizepicks_slip(
     outcomes: Sequence[int],
     mode: Literal["power", "flex"],
