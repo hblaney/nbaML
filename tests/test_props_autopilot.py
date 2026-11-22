@@ -33,15 +33,15 @@ def test_stat_tail_calibration_boosts_assists_over_points() -> None:
 
 
 def test_select_slip_legs_enforces_rd091_prop_type_diversity() -> None:
-    """v2.4-soft1.0-div2: 5-Flex must span ≥2 distinct prop_type categories."""
+    """v2.5: 5-Flex must span ≥2 distinct prop_type categories (RD-091)."""
     # Top-5 by p would be all Points across unique games — diversity must swap in Pts+Asts.
     cands = [
-        {"game_id": "g1", "stat": "Points", "player": "A", "p_calibrated": 0.60},
-        {"game_id": "g2", "stat": "Points", "player": "B", "p_calibrated": 0.59},
-        {"game_id": "g3", "stat": "Points", "player": "C", "p_calibrated": 0.58},
-        {"game_id": "g4", "stat": "Points", "player": "D", "p_calibrated": 0.57},
-        {"game_id": "g5", "stat": "Points", "player": "E", "p_calibrated": 0.56},
-        {"game_id": "g6", "stat": "Pts+Asts", "player": "F", "p_calibrated": 0.555},
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.60},
+        {"game_id": "g2", "stat": "Points", "side": "LESS", "player": "B", "p_calibrated": 0.59},
+        {"game_id": "g3", "stat": "Points", "side": "LESS", "player": "C", "p_calibrated": 0.58},
+        {"game_id": "g4", "stat": "Points", "side": "LESS", "player": "D", "p_calibrated": 0.57},
+        {"game_id": "g5", "stat": "Points", "side": "LESS", "player": "E", "p_calibrated": 0.56},
+        {"game_id": "g6", "stat": "Pts+Asts", "side": "MORE", "player": "F", "p_calibrated": 0.555},
     ]
     legs = select_slip_legs(cands, n_legs=5, min_distinct_prop_types=2)
     assert len(legs) == 5
@@ -50,8 +50,8 @@ def test_select_slip_legs_enforces_rd091_prop_type_diversity() -> None:
 
     # Same-game duplicate skipped; still forms diverse 5.
     with_dupe = [
-        {"game_id": "g1", "stat": "Points", "player": "A", "p_calibrated": 0.61},
-        {"game_id": "g1", "stat": "Assists", "player": "A2", "p_calibrated": 0.605},
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.61},
+        {"game_id": "g1", "stat": "Assists", "side": "MORE", "player": "A2", "p_calibrated": 0.605},
         *cands[1:],
     ]
     legs2 = select_slip_legs(with_dupe, n_legs=5, min_distinct_prop_types=2)
@@ -65,6 +65,35 @@ def test_select_slip_legs_enforces_rd091_prop_type_diversity() -> None:
 
     # Without the floor, mono 5-Flex is allowed (legacy behavior for non-5 or opt-out).
     assert len(select_slip_legs(mono, n_legs=5, min_distinct_prop_types=None)) == 5
+
+
+def test_select_slip_legs_enforces_rd103_max_points_more() -> None:
+    """v2.5-soft1.0-div2-ptsmore1: at most one Points MORE leg on 5-Flex."""
+    cands = [
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.62},
+        {"game_id": "g2", "stat": "Points", "side": "MORE", "player": "B", "p_calibrated": 0.61},
+        {"game_id": "g3", "stat": "Pts+Asts", "side": "MORE", "player": "C", "p_calibrated": 0.60},
+        {"game_id": "g4", "stat": "Pts+Rebs", "side": "LESS", "player": "D", "p_calibrated": 0.59},
+        {"game_id": "g5", "stat": "Assists", "side": "MORE", "player": "E", "p_calibrated": 0.58},
+        {"game_id": "g6", "stat": "Points", "side": "LESS", "player": "F", "p_calibrated": 0.57},
+    ]
+    legs = select_slip_legs(
+        cands, n_legs=5, min_distinct_prop_types=2, max_points_more=1
+    )
+    assert len(legs) == 5
+    points_more = [x for x in legs if x["stat"] == "Points" and x["side"] == "MORE"]
+    assert len(points_more) == 1
+    assert points_more[0]["player"] == "A"
+    # Second Points MORE (B) skipped; Points LESS (F) still allowed.
+    assert "B" not in {x["player"] for x in legs}
+    assert "F" in {x["player"] for x in legs}
+
+    # Combined with diversity: all Points MORE board cannot fill 5 under both gates.
+    mono_more = [
+        {"game_id": f"g{i}", "stat": "Points", "side": "MORE", "player": f"P{i}", "p_calibrated": 0.60 - 0.01 * i}
+        for i in range(6)
+    ]
+    assert select_slip_legs(mono_more, n_legs=5, min_distinct_prop_types=2, max_points_more=1) == []
 
 
 def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:

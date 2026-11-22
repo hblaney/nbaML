@@ -427,19 +427,29 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
             & (sc_df["p_calibrated"] >= 0.548)
         ].copy()
         top_edges = clean.head(12).to_dict(orient="records")
-        # Preserve p_calibrated rank; unique-game + RD-091 diversity handled in select_slip_legs.
-        ranked = clean.sort_values("p_calibrated", ascending=False).to_dict(orient="records")
+        # Preserve p_calibrated rank; RD-091 / RD-103 gates handled in select_slip_legs.
+        # Same-CT-day filter: ESPN slate includes tomorrow for preview, but the 1-a-day
+        # recommended card must not bankroll-lock Sunday tips into a Saturday slip
+        # (Paul Reed DET@ATL 2026-11-22). Late West Coast tips still share today's
+        # America/Chicago slate_date, so this does not drop same-night LAL/GSW games.
+        ranked_df = clean[clean["slate_date"].astype(str) == today_s].sort_values(
+            "p_calibrated", ascending=False
+        )
+        if ranked_df.empty:
+            ranked_df = clean.sort_values("p_calibrated", ascending=False)
+        ranked = ranked_df.to_dict(orient="records")
         best_choice = None
-        for k_legs, mode, label, min_prop_types in [
-            # RD-091 / v2.4-soft1.0-div2: 5-Flex must span ≥2 prop_type categories.
-            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)", 2),
-            (4, "flex", "4-Pick Flex (6x / 1.5x)", None),
-            (3, "power", "3-Pick Power (6x)", None),
+        for k_legs, mode, label, min_prop_types, max_pts_more in [
+            # RD-091 + RD-103 / v2.5-soft1.0-div2-ptsmore1
+            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)", 2, 1),
+            (4, "flex", "4-Pick Flex (6x / 1.5x)", None, None),
+            (3, "power", "3-Pick Power (6x)", None, None),
         ]:
             legs = select_slip_legs(
                 ranked,
                 n_legs=k_legs,
                 min_distinct_prop_types=min_prop_types,
+                max_points_more=max_pts_more,
             )
             if len(legs) < k_legs:
                 continue
@@ -459,9 +469,13 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
                     **metrics,
                     "legs": legs,
                 }
-                if min_prop_types is not None:
-                    slip["min_distinct_prop_types"] = min_prop_types
-                    slip["champion"] = "v2.4-soft1.0-div2"
+                if min_prop_types is not None or max_pts_more is not None:
+                    if min_prop_types is not None:
+                        slip["min_distinct_prop_types"] = min_prop_types
+                    if max_pts_more is not None:
+                        slip["max_points_more"] = max_pts_more
+                    slip["champion"] = "v2.5-soft1.0-div2-ptsmore1"
+                    slip["slate_date_filter"] = today_s
                 best_choice = (metrics["expected_log_growth"], slip)
         if best_choice is not None:
             recommended_slip = best_choice[1]
@@ -481,7 +495,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         "prizepicks_standard_props_live": int(len(pp_df)),
         "upcoming_games_scanned": int(len(gm_df)),
         "matched_two_way_props": int(len(sc_df)),
-        "active_model_version": "v2.4-soft1.0-div2",
+        "active_model_version": "v2.5-soft1.0-div2-ptsmore1",
         "promoted_rd_upgrades": [
             {
                 "id": "RD-001",
@@ -502,6 +516,13 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
                 "title": "Require ≥2 distinct prop_types per 5-Pick Flex",
                 "finding": "Single-category 5-Flex stacks overfit same-side concentration; enforcing ≥2 prop_type categories lifts ESPN confirm/holdout while OddsAPI stays non-negative.",
                 "oos_lift": "ESPN confirm ΔROI +0.124; holdout ΔROI +0.012; OddsAPI confirm/holdout ΔROI 0.0 / 0.0.",
+                "status": "PROMOTED",
+            },
+            {
+                "id": "RD-103",
+                "title": "Cap Points MORE legs ≤1 per 5-Pick Flex",
+                "finding": "Low-line MORE Points stacks (Smart/Okogie/Hart-class) over-concentrate shooting variance; capping Points MORE at 1 per 5-Flex lifts both ESPN OOS seasons.",
+                "oos_lift": "ESPN confirm ΔROI +0.056; holdout ΔROI +0.047; OddsAPI confirm/holdout ΔROI 0.0 / 0.0.",
                 "status": "PROMOTED",
             },
         ],

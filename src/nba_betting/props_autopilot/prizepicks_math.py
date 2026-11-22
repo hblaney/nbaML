@@ -70,27 +70,34 @@ def select_slip_legs(
     *,
     n_legs: int,
     min_distinct_prop_types: int | None = None,
+    max_points_more: int | None = None,
     prop_key: str = "stat",
+    side_key: str = "side",
     game_key: str = "game_id",
     score_key: str = "p_calibrated",
 ) -> list[dict[str, Any]]:
-    """Greedy unique-game slip builder with optional prop-type diversity (RD-091).
+    """Greedy unique-game slip builder with RD-091 / RD-103 champion gates.
 
     Candidates should already be sorted best-first by ``score_key``. Returns an
-    empty list when a full ``n_legs`` ticket satisfying the diversity floor
-    cannot be formed. For champion ``v2.4-soft1.0-div2``, 5-Pick Flex uses
-    ``min_distinct_prop_types=2``.
+    empty list when a full ``n_legs`` ticket satisfying the gates cannot be
+    formed. Champion ``v2.5-soft1.0-div2-ptsmore1`` 5-Pick Flex uses
+    ``min_distinct_prop_types=2`` and ``max_points_more=1``.
     """
     if n_legs < 1:
         return []
     picked: list[dict[str, Any]] = []
     seen_games: set[Any] = set()
     prop_types: set[str] = set()
+    n_points_more = 0
     for leg in candidates:
         game = leg.get(game_key)
         if game in seen_games:
             continue
         prop = str(leg.get(prop_key) or "")
+        side = str(leg.get(side_key) or "").upper()
+        is_points_more = prop in ("Points", "points") and side in ("MORE", "OVER")
+        if max_points_more is not None and is_points_more and n_points_more >= max_points_more:
+            continue
         next_types = prop_types | ({prop} if prop else set())
         # Last slot: refuse a pick that would leave the ticket below the floor.
         if (
@@ -103,11 +110,15 @@ def select_slip_legs(
         picked.append(dict(leg))
         if prop:
             prop_types.add(prop)
+        if is_points_more:
+            n_points_more += 1
         if len(picked) >= n_legs:
             break
     if len(picked) < n_legs:
         return []
     if min_distinct_prop_types is not None and len(prop_types) < min_distinct_prop_types:
+        return []
+    if max_points_more is not None and n_points_more > max_points_more:
         return []
     return picked
 
