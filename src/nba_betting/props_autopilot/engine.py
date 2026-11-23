@@ -19,9 +19,16 @@ from scipy.stats import nbinom
 
 from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
+    select_slip_legs,
     settle_prizepicks_slip,
+    signed_stale_soft,
     slip_ev_and_log_growth,
 )
+
+# Champion v2.5-soft1.0-div2-ptsmore1 live thresholds (parity with R&D evaluator).
+CHAMPION_SOFT_ABS = 1.0
+CHAMPION_P_CAL_FLOOR = 0.548
+CHAMPION_P_DK_FLOOR = 0.542
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 NORM_TEAM = {"NYK": "NY", "NOP": "NO", "SAS": "SA", "GSW": "GS", "UTA": "UTAH", "WAS": "WSH"}
@@ -415,47 +422,75 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         ts_tag = now_utc.strftime("%Y%m%dT%H%M%SZ")
         sc_df.to_parquet(snap_dir / f"scan_{ts_tag}.parquet", index=False)
 
-    # Select optimal 1-a-day card (Healthy/Probable, .5 half-points, 1 pick per game)
+    # Select optimal 1-a-day card (Healthy/Probable, .5 half-points, soft1.0, 1 pick/game+player)
     recommended_slip: dict[str, Any] | None = None
     top_edges: list[dict[str, Any]] = []
     if not sc_df.empty:
         clean = sc_df[
             (sc_df["inj_status"].isin(["Healthy", "Probable"]))
             & (sc_df["p_push"] == 0.0)
-            & (sc_df["p_dk_at_pp"] >= 0.542)
-            & (sc_df["p_calibrated"] >= 0.548)
+            & (sc_df["p_dk_at_pp"] >= CHAMPION_P_DK_FLOOR)
+            & (sc_df["p_calibrated"] >= CHAMPION_P_CAL_FLOOR)
         ].copy()
+        # soft1.0 signed PP-vs-DK stale gap (live proxy for R&D |model_exp−line|≥1).
+        # Rejects flat gaps (Sabonis LESS 4.5 vs DK 4.5) and wrong-way soft.
+        if not clean.empty:
+            clean["signed_soft"] = [
+                signed_stale_soft(s, pp, dk)
+                for s, pp, dk in zip(clean["side"], clean["pp_line"], clean["dk_line"])
+            ]
+            clean = clean[clean["signed_soft"] >= CHAMPION_SOFT_ABS].copy()
         top_edges = clean.head(12).to_dict(orient="records")
-        distinct_game = clean.drop_duplicates(subset=["game_id"], keep="first").sort_values(
+        # Preserve p_calibrated rank; RD-091 / RD-103 gates handled in select_slip_legs.
+        # Same-CT-day filter: ESPN slate includes tomorrow for preview, but the 1-a-day
+        # recommended card must not bankroll-lock Sunday tips into a Saturday slip
+        # (Paul Reed DET@ATL 2026-11-22). Late West Coast tips still share today's
+        # America/Chicago slate_date, so this does not drop same-night LAL/GSW games.
+        # No fallback to tomorrow — empty today means no recommended slip.
+        ranked_df = clean[clean["slate_date"].astype(str) == today_s].sort_values(
             "p_calibrated", ascending=False
         )
+        ranked = ranked_df.to_dict(orient="records")
         best_choice = None
-        for k_legs, mode, label in [
-            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)"),
-            (4, "flex", "4-Pick Flex (6x / 1.5x)"),
-            (3, "power", "3-Pick Power (6x)"),
+        for k_legs, mode, label, min_prop_types, max_pts_more in [
+            # RD-091 + RD-103 / v2.5-soft1.0-div2-ptsmore1
+            (5, "flex", "5-Pick Flex (10x / 2x / 0.4x)", 2, 1),
+            (4, "flex", "4-Pick Flex (6x / 1.5x)", None, None),
+            (3, "power", "3-Pick Power (6x)", None, None),
         ]:
-            if len(distinct_game) >= k_legs:
-                sub = distinct_game.iloc[:k_legs]
-                metrics = slip_ev_and_log_growth(
-                    sub["p_calibrated"].tolist(),
-                    mode=mode,  # type: ignore[arg-type]
-                    c_kelly=0.50,
-                    max_frac=0.06,
-                )
-                if metrics["ev"] > 0 and (
-                    best_choice is None or metrics["expected_log_growth"] > best_choice[0]
-                ):
-                    best_choice = (
-                        metrics["expected_log_growth"],
-                        {
-                            "slip_type": label,
-                            "mode": mode,
-                            "n_legs": k_legs,
-                            **metrics,
-                            "legs": sub.to_dict(orient="records"),
-                        },
-                    )
+            legs = select_slip_legs(
+                ranked,
+                n_legs=k_legs,
+                min_distinct_prop_types=min_prop_types,
+                max_points_more=max_pts_more,
+            )
+            if len(legs) < k_legs:
+                continue
+            metrics = slip_ev_and_log_growth(
+                [float(x["p_calibrated"]) for x in legs],
+                mode=mode,  # type: ignore[arg-type]
+                c_kelly=0.50,
+                max_frac=0.06,
+            )
+            if metrics["ev"] > 0 and (
+                best_choice is None or metrics["expected_log_growth"] > best_choice[0]
+            ):
+                slip: dict[str, Any] = {
+                    "slip_type": label,
+                    "mode": mode,
+                    "n_legs": k_legs,
+                    **metrics,
+                    "legs": legs,
+                    "soft_abs": CHAMPION_SOFT_ABS,
+                }
+                if min_prop_types is not None or max_pts_more is not None:
+                    if min_prop_types is not None:
+                        slip["min_distinct_prop_types"] = min_prop_types
+                    if max_pts_more is not None:
+                        slip["max_points_more"] = max_pts_more
+                    slip["champion"] = "v2.5-soft1.0-div2-ptsmore1"
+                    slip["slate_date_filter"] = today_s
+                best_choice = (metrics["expected_log_growth"], slip)
         if best_choice is not None:
             recommended_slip = best_choice[1]
 
@@ -474,7 +509,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         "prizepicks_standard_props_live": int(len(pp_df)),
         "upcoming_games_scanned": int(len(gm_df)),
         "matched_two_way_props": int(len(sc_df)),
-        "active_model_version": "v2.1-stat-bayes-blowout",
+        "active_model_version": "v2.5-soft1.0-div2-ptsmore1",
         "promoted_rd_upgrades": [
             {
                 "id": "RD-001",
@@ -489,6 +524,20 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
                 "finding": "Improved Confirm 2024-25 3-Power (+31.7%) but degraded OddsAPI 2024-26 (-5.6%) due to colinearity with market line.",
                 "oos_lift": "Rejected by dual-holdout gate (zero overfit promotions).",
                 "status": "REJECTED",
+            },
+            {
+                "id": "RD-091",
+                "title": "Require ≥2 distinct prop_types per 5-Pick Flex",
+                "finding": "Single-category 5-Flex stacks overfit same-side concentration; enforcing ≥2 prop_type categories lifts ESPN confirm/holdout while OddsAPI stays non-negative.",
+                "oos_lift": "ESPN confirm ΔROI +0.124; holdout ΔROI +0.012; OddsAPI confirm/holdout ΔROI 0.0 / 0.0.",
+                "status": "PROMOTED",
+            },
+            {
+                "id": "RD-103",
+                "title": "Cap Points MORE legs ≤1 per 5-Pick Flex",
+                "finding": "Low-line MORE Points stacks (Smart/Okogie/Hart-class) over-concentrate shooting variance; capping Points MORE at 1 per 5-Flex lifts both ESPN OOS seasons.",
+                "oos_lift": "ESPN confirm ΔROI +0.056; holdout ΔROI +0.047; OddsAPI confirm/holdout ΔROI 0.0 / 0.0.",
+                "status": "PROMOTED",
             },
         ],
         "recommended_slip": recommended_slip,

@@ -6,7 +6,10 @@ from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
     evaluate_live_cashout,
     exact_hits_pmf,
+    passes_soft_stale_line,
+    select_slip_legs,
     settle_prizepicks_slip,
+    signed_stale_soft,
     slip_ev_and_log_growth,
 )
 
@@ -29,6 +32,198 @@ def test_stat_tail_calibration_boosts_assists_over_points() -> None:
     p_ast = apply_stat_tail_calibration(0.555, "Assists")
     p_pts = apply_stat_tail_calibration(0.555, "Points")
     assert p_ast > 0.555 > p_pts
+
+
+def test_select_slip_legs_enforces_rd091_prop_type_diversity() -> None:
+    """v2.5: 5-Flex must span ≥2 distinct prop_type categories (RD-091)."""
+    # Top-5 by p would be all Points across unique games — diversity must swap in Pts+Asts.
+    cands = [
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.60},
+        {"game_id": "g2", "stat": "Points", "side": "LESS", "player": "B", "p_calibrated": 0.59},
+        {"game_id": "g3", "stat": "Points", "side": "LESS", "player": "C", "p_calibrated": 0.58},
+        {"game_id": "g4", "stat": "Points", "side": "LESS", "player": "D", "p_calibrated": 0.57},
+        {"game_id": "g5", "stat": "Points", "side": "LESS", "player": "E", "p_calibrated": 0.56},
+        {"game_id": "g6", "stat": "Pts+Asts", "side": "MORE", "player": "F", "p_calibrated": 0.555},
+    ]
+    legs = select_slip_legs(cands, n_legs=5, min_distinct_prop_types=2)
+    assert len(legs) == 5
+    assert {x["stat"] for x in legs} == {"Points", "Pts+Asts"}
+    assert legs[-1]["player"] == "F"
+
+    # Same-game duplicate skipped; still forms diverse 5.
+    with_dupe = [
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.61},
+        {"game_id": "g1", "stat": "Assists", "side": "MORE", "player": "A2", "p_calibrated": 0.605},
+        *cands[1:],
+    ]
+    legs2 = select_slip_legs(with_dupe, n_legs=5, min_distinct_prop_types=2)
+    assert len(legs2) == 5
+    assert len({x["game_id"] for x in legs2}) == 5
+    assert len({x["stat"] for x in legs2}) >= 2
+
+    # Impossible diversity → empty (all Points, only 5 games).
+    mono = cands[:5]
+    assert select_slip_legs(mono, n_legs=5, min_distinct_prop_types=2) == []
+
+    # Without the floor, mono 5-Flex is allowed (legacy behavior for non-5 or opt-out).
+    assert len(select_slip_legs(mono, n_legs=5, min_distinct_prop_types=None)) == 5
+
+
+def test_soft1_signed_stale_rejects_flat_and_wrong_way() -> None:
+    """v2.5 soft1.0: |PP-DK|<1 and wrong-way gaps cannot qualify."""
+    # Sabonis-class flat LESS (Mon 12 AM CT preview bug).
+    assert signed_stale_soft("LESS", 4.5, 4.5) == 0.0
+    assert not passes_soft_stale_line("LESS", 4.5, 4.5, min_abs=1.0)
+    # Shannon-class flat MORE.
+    assert not passes_soft_stale_line("MORE", 5.5, 5.5, min_abs=1.0)
+    # Wrong-way: MORE with PP above DK, LESS with PP below DK.
+    assert signed_stale_soft("MORE", 12.5, 11.5) == -1.0
+    assert not passes_soft_stale_line("MORE", 12.5, 11.5, min_abs=1.0)
+    assert signed_stale_soft("LESS", 10.5, 11.5) == -1.0
+    assert not passes_soft_stale_line("LESS", 10.5, 11.5, min_abs=1.0)
+    # Aligned soft ≥1.0 passes (Fears MORE / Camara LESS).
+    assert passes_soft_stale_line("MORE", 22.5, 24.5, min_abs=1.0)
+    assert passes_soft_stale_line("LESS", 11.5, 10.5, min_abs=1.0)
+    # Sub-1 absolute gap fails even if directionally aligned.
+    assert not passes_soft_stale_line("MORE", 20.0, 20.5, min_abs=1.0)
+    assert not passes_soft_stale_line("LESS", 15.5, 15.0, min_abs=1.0)
+
+
+def test_recommended_slip_candidates_exclude_soft_violations() -> None:
+    """Live recommended pool must drop soft1.0 failures before select_slip_legs."""
+    cands = [
+        # Flat LESS — Sabonis class (must not enter).
+        {
+            "game_id": "g_sab",
+            "cname": "domantas sabonis",
+            "player": "Domantas Sabonis",
+            "stat": "Assists",
+            "side": "LESS",
+            "pp_line": 4.5,
+            "dk_line": 4.5,
+            "p_calibrated": 0.99,
+        },
+        # Wrong-way MORE.
+        {
+            "game_id": "g_ww",
+            "cname": "wrong way",
+            "player": "Wrong Way",
+            "stat": "Points",
+            "side": "MORE",
+            "pp_line": 18.5,
+            "dk_line": 17.5,
+            "p_calibrated": 0.98,
+        },
+        # Valid soft MORE / LESS board that can fill 5-Flex under RD-091/103.
+        {
+            "game_id": "g1",
+            "cname": "a",
+            "player": "A",
+            "stat": "Pts+Asts",
+            "side": "MORE",
+            "pp_line": 22.5,
+            "dk_line": 24.5,
+            "p_calibrated": 0.60,
+        },
+        {
+            "game_id": "g2",
+            "cname": "b",
+            "player": "B",
+            "stat": "Points",
+            "side": "LESS",
+            "pp_line": 11.5,
+            "dk_line": 10.5,
+            "p_calibrated": 0.59,
+        },
+        {
+            "game_id": "g3",
+            "cname": "c",
+            "player": "C",
+            "stat": "Points",
+            "side": "LESS",
+            "pp_line": 13.5,
+            "dk_line": 12.5,
+            "p_calibrated": 0.58,
+        },
+        {
+            "game_id": "g4",
+            "cname": "d",
+            "player": "D",
+            "stat": "Rebs+Asts",
+            "side": "MORE",
+            "pp_line": 5.5,
+            "dk_line": 6.5,
+            "p_calibrated": 0.57,
+        },
+        {
+            "game_id": "g5",
+            "cname": "e",
+            "player": "E",
+            "stat": "Assists",
+            "side": "LESS",
+            "pp_line": 6.5,
+            "dk_line": 5.5,
+            "p_calibrated": 0.56,
+        },
+    ]
+    soft_ok = [
+        x
+        for x in cands
+        if passes_soft_stale_line(x["side"], x["pp_line"], x["dk_line"], min_abs=1.0)
+    ]
+    assert all(x["cname"] not in {"domantas sabonis", "wrong way"} for x in soft_ok)
+    legs = select_slip_legs(
+        soft_ok, n_legs=5, min_distinct_prop_types=2, max_points_more=1
+    )
+    assert len(legs) == 5
+    names = {x["cname"] for x in legs}
+    assert "domantas sabonis" not in names
+    assert "wrong way" not in names
+    for leg in legs:
+        assert passes_soft_stale_line(leg["side"], leg["pp_line"], leg["dk_line"], min_abs=1.0)
+
+
+def test_select_slip_legs_enforces_unique_player() -> None:
+    cands = [
+        {"game_id": "g1", "cname": "same", "player": "Same", "stat": "Points", "side": "MORE", "p_calibrated": 0.62},
+        {"game_id": "g2", "cname": "same", "player": "Same", "stat": "Assists", "side": "MORE", "p_calibrated": 0.61},
+        {"game_id": "g3", "cname": "b", "player": "B", "stat": "Pts+Asts", "side": "MORE", "p_calibrated": 0.60},
+        {"game_id": "g4", "cname": "c", "player": "C", "stat": "Rebounds", "side": "LESS", "p_calibrated": 0.59},
+        {"game_id": "g5", "cname": "d", "player": "D", "stat": "Points", "side": "LESS", "p_calibrated": 0.58},
+        {"game_id": "g6", "cname": "e", "player": "E", "stat": "Assists", "side": "LESS", "p_calibrated": 0.57},
+    ]
+    legs = select_slip_legs(cands, n_legs=5, min_distinct_prop_types=2, max_points_more=1)
+    assert len(legs) == 5
+    assert len({x["cname"] for x in legs}) == 5
+
+
+def test_select_slip_legs_enforces_rd103_max_points_more() -> None:
+    """v2.5-soft1.0-div2-ptsmore1: at most one Points MORE leg on 5-Flex."""
+    cands = [
+        {"game_id": "g1", "stat": "Points", "side": "MORE", "player": "A", "p_calibrated": 0.62},
+        {"game_id": "g2", "stat": "Points", "side": "MORE", "player": "B", "p_calibrated": 0.61},
+        {"game_id": "g3", "stat": "Pts+Asts", "side": "MORE", "player": "C", "p_calibrated": 0.60},
+        {"game_id": "g4", "stat": "Pts+Rebs", "side": "LESS", "player": "D", "p_calibrated": 0.59},
+        {"game_id": "g5", "stat": "Assists", "side": "MORE", "player": "E", "p_calibrated": 0.58},
+        {"game_id": "g6", "stat": "Points", "side": "LESS", "player": "F", "p_calibrated": 0.57},
+    ]
+    legs = select_slip_legs(
+        cands, n_legs=5, min_distinct_prop_types=2, max_points_more=1
+    )
+    assert len(legs) == 5
+    points_more = [x for x in legs if x["stat"] == "Points" and x["side"] == "MORE"]
+    assert len(points_more) == 1
+    assert points_more[0]["player"] == "A"
+    # Second Points MORE (B) skipped; Points LESS (F) still allowed.
+    assert "B" not in {x["player"] for x in legs}
+    assert "F" in {x["player"] for x in legs}
+
+    # Combined with diversity: all Points MORE board cannot fill 5 under both gates.
+    mono_more = [
+        {"game_id": f"g{i}", "stat": "Points", "side": "MORE", "player": f"P{i}", "p_calibrated": 0.60 - 0.01 * i}
+        for i in range(6)
+    ]
+    assert select_slip_legs(mono_more, n_legs=5, min_distinct_prop_types=2, max_points_more=1) == []
 
 
 def test_live_cashout_calculator_matches_jalen_green_scenario() -> None:

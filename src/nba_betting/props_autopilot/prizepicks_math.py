@@ -53,6 +53,41 @@ def apply_stat_tail_calibration(prob_win: float, stat_type: str) -> float:
     return float(np.clip(float(prob_win) + adj, 0.05, 0.72))
 
 
+def signed_stale_soft(side: str, pp_line: float, dk_line: float) -> float:
+    """Signed PrizePicks-vs-DraftKings soft gap aligned with champion soft1.0.
+
+    MORE/OVER wants a lower PP line than DK (``dk - pp``); LESS/UNDER wants a
+    higher PP line than DK (``pp - dk``). Wrong-way and flat gaps are negative
+    or zero.
+    """
+    side_u = str(side or "").upper()
+    pp = float(pp_line)
+    dk = float(dk_line)
+    if side_u in ("MORE", "OVER"):
+        return dk - pp
+    if side_u in ("LESS", "UNDER"):
+        return pp - dk
+    return float("nan")
+
+
+def passes_soft_stale_line(
+    side: str,
+    pp_line: float,
+    dk_line: float,
+    *,
+    min_abs: float = 1.0,
+) -> bool:
+    """Champion ``v2.5-soft1.0-*`` live gate: signed stale soft ≥ ``min_abs``.
+
+    Rejects ``|PP - DK| < min_abs`` and wrong-way discrepancies (e.g. MORE with
+    PP above DK, LESS with PP below DK).
+    """
+    soft = signed_stale_soft(side, pp_line, dk_line)
+    if soft != soft:  # NaN
+        return False
+    return soft >= float(min_abs)
+
+
 def exact_hits_pmf(probs: Sequence[float]) -> np.ndarray:
     """Exact Poisson-Binomial hit count distribution for heterogeneous independent legs."""
     dp = np.array([1.0], dtype=float)
@@ -63,6 +98,73 @@ def exact_hits_pmf(probs: Sequence[float]) -> np.ndarray:
         nxt[1:] += dp * pp
         dp = nxt
     return dp
+
+
+def select_slip_legs(
+    candidates: Sequence[dict[str, Any]],
+    *,
+    n_legs: int,
+    min_distinct_prop_types: int | None = None,
+    max_points_more: int | None = None,
+    prop_key: str = "stat",
+    side_key: str = "side",
+    game_key: str = "game_id",
+    player_key: str = "cname",
+    score_key: str = "p_calibrated",
+    enforce_unique_player: bool = True,
+) -> list[dict[str, Any]]:
+    """Greedy unique-game slip builder with RD-091 / RD-103 champion gates.
+
+    Candidates should already be sorted best-first by ``score_key``. Returns an
+    empty list when a full ``n_legs`` ticket satisfying the gates cannot be
+    formed. Champion ``v2.5-soft1.0-div2-ptsmore1`` 5-Pick Flex uses
+    ``min_distinct_prop_types=2`` and ``max_points_more=1``. Soft1.0
+    (``passes_soft_stale_line``) must be applied by the caller before ranking.
+    """
+    if n_legs < 1:
+        return []
+    picked: list[dict[str, Any]] = []
+    seen_games: set[Any] = set()
+    seen_players: set[str] = set()
+    prop_types: set[str] = set()
+    n_points_more = 0
+    for leg in candidates:
+        game = leg.get(game_key)
+        if game in seen_games:
+            continue
+        player = str(leg.get(player_key) or leg.get("player") or "").strip().lower()
+        if enforce_unique_player and player and player in seen_players:
+            continue
+        prop = str(leg.get(prop_key) or "")
+        side = str(leg.get(side_key) or "").upper()
+        is_points_more = prop in ("Points", "points") and side in ("MORE", "OVER")
+        if max_points_more is not None and is_points_more and n_points_more >= max_points_more:
+            continue
+        next_types = prop_types | ({prop} if prop else set())
+        # Last slot: refuse a pick that would leave the ticket below the floor.
+        if (
+            min_distinct_prop_types is not None
+            and len(picked) == n_legs - 1
+            and len(next_types) < min_distinct_prop_types
+        ):
+            continue
+        seen_games.add(game)
+        if player:
+            seen_players.add(player)
+        picked.append(dict(leg))
+        if prop:
+            prop_types.add(prop)
+        if is_points_more:
+            n_points_more += 1
+        if len(picked) >= n_legs:
+            break
+    if len(picked) < n_legs:
+        return []
+    if min_distinct_prop_types is not None and len(prop_types) < min_distinct_prop_types:
+        return []
+    if max_points_more is not None and n_points_more > max_points_more:
+        return []
+    return picked
 
 
 def settle_prizepicks_slip(
