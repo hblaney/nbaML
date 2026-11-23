@@ -21,8 +21,14 @@ from nba_betting.props_autopilot.prizepicks_math import (
     apply_stat_tail_calibration,
     select_slip_legs,
     settle_prizepicks_slip,
+    signed_stale_soft,
     slip_ev_and_log_growth,
 )
+
+# Champion v2.5-soft1.0-div2-ptsmore1 live thresholds (parity with R&D evaluator).
+CHAMPION_SOFT_ABS = 1.0
+CHAMPION_P_CAL_FLOOR = 0.548
+CHAMPION_P_DK_FLOOR = 0.542
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 NORM_TEAM = {"NYK": "NY", "NOP": "NO", "SAS": "SA", "GSW": "GS", "UTA": "UTAH", "WAS": "WSH"}
@@ -416,27 +422,34 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
         ts_tag = now_utc.strftime("%Y%m%dT%H%M%SZ")
         sc_df.to_parquet(snap_dir / f"scan_{ts_tag}.parquet", index=False)
 
-    # Select optimal 1-a-day card (Healthy/Probable, .5 half-points, 1 pick per game)
+    # Select optimal 1-a-day card (Healthy/Probable, .5 half-points, soft1.0, 1 pick/game+player)
     recommended_slip: dict[str, Any] | None = None
     top_edges: list[dict[str, Any]] = []
     if not sc_df.empty:
         clean = sc_df[
             (sc_df["inj_status"].isin(["Healthy", "Probable"]))
             & (sc_df["p_push"] == 0.0)
-            & (sc_df["p_dk_at_pp"] >= 0.542)
-            & (sc_df["p_calibrated"] >= 0.548)
+            & (sc_df["p_dk_at_pp"] >= CHAMPION_P_DK_FLOOR)
+            & (sc_df["p_calibrated"] >= CHAMPION_P_CAL_FLOOR)
         ].copy()
+        # soft1.0 signed PP-vs-DK stale gap (live proxy for R&D |model_exp−line|≥1).
+        # Rejects flat gaps (Sabonis LESS 4.5 vs DK 4.5) and wrong-way soft.
+        if not clean.empty:
+            clean["signed_soft"] = [
+                signed_stale_soft(s, pp, dk)
+                for s, pp, dk in zip(clean["side"], clean["pp_line"], clean["dk_line"])
+            ]
+            clean = clean[clean["signed_soft"] >= CHAMPION_SOFT_ABS].copy()
         top_edges = clean.head(12).to_dict(orient="records")
         # Preserve p_calibrated rank; RD-091 / RD-103 gates handled in select_slip_legs.
         # Same-CT-day filter: ESPN slate includes tomorrow for preview, but the 1-a-day
         # recommended card must not bankroll-lock Sunday tips into a Saturday slip
         # (Paul Reed DET@ATL 2026-11-22). Late West Coast tips still share today's
         # America/Chicago slate_date, so this does not drop same-night LAL/GSW games.
+        # No fallback to tomorrow — empty today means no recommended slip.
         ranked_df = clean[clean["slate_date"].astype(str) == today_s].sort_values(
             "p_calibrated", ascending=False
         )
-        if ranked_df.empty:
-            ranked_df = clean.sort_values("p_calibrated", ascending=False)
         ranked = ranked_df.to_dict(orient="records")
         best_choice = None
         for k_legs, mode, label, min_prop_types, max_pts_more in [
@@ -468,6 +481,7 @@ def run_autopilot_cycle(state_dir: Path) -> dict[str, Any]:
                     "n_legs": k_legs,
                     **metrics,
                     "legs": legs,
+                    "soft_abs": CHAMPION_SOFT_ABS,
                 }
                 if min_prop_types is not None or max_pts_more is not None:
                     if min_prop_types is not None:
